@@ -182,12 +182,12 @@ input:focus{outline:2px solid var(--brass);outline-offset:1px}
       <label for="email">Correo</label>
       <input id="email" type="email" autocomplete="email" inputmode="email" required>
     </div>
-    <button class="btn" id="send-btn" type="submit">Enviarme el acceso</button>
-    <div id="otp-box" hidden style="display:grid;gap:6px">
-      <label for="otp">Código del correo</label>
-      <input id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="Código de 6 dígitos">
-      <button class="btn ghost" id="otp-btn" type="button">Entrar con el código</button>
+    <div style="display:grid;gap:6px">
+      <label for="pass">Contraseña <span style="font-weight:400">(si ya la creaste)</span></label>
+      <input id="pass" type="password" autocomplete="current-password">
     </div>
+    <button class="btn" id="pass-btn" type="submit">Entrar</button>
+    <button class="btn ghost" id="send-btn" type="button">Enviarme un enlace de acceso al correo</button>
     <div id="login-msg" class="msg" hidden></div>
   </form>
 </div>
@@ -210,6 +210,15 @@ input:focus{outline:2px solid var(--brass);outline-offset:1px}
     <section class="view" id="v-watch" hidden></section>
     <section class="view" id="v-cartera" hidden></section>
     <section class="view" id="v-macro" hidden></section>
+    <details class="card" id="acceso" style="margin-top:14px"><summary style="cursor:pointer;font-weight:600">Acceso</summary>
+      <form id="pw-form" style="display:grid;gap:8px;margin-top:10px">
+        <label for="pw1">Crear o cambiar contraseña para entrar desde la app</label>
+        <input id="pw1" type="password" autocomplete="new-password" minlength="8">
+        <button class="btn" type="submit">Guardar contraseña</button>
+        <div id="pw-msg" class="msg" hidden></div>
+      </form>
+      <button class="btn ghost" id="logout-btn" type="button" style="margin-top:8px">Cerrar sesión</button>
+    </details>
   </main>
 
   <nav class="tabs" aria-label="Secciones"><div class="tabs-in" role="tablist">

@@ -597,20 +597,37 @@ document.addEventListener("visibilitychange", () => {
 
 $("#login-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
+  const email = $("#email").value.trim().toLowerCase(), password = $("#pass").value;
+  if (!/^\S+@\S+\.\S+$/.test(email)) { showLogin("Escribe un correo válido.", true); return; }
+  if (!password) { showLogin("Escribe tu contraseña, o pide un enlace de acceso al correo.", true); return; }
+  $("#pass-btn").disabled = true;
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  $("#pass-btn").disabled = false;
+  if (error) showLogin("Correo o contraseña no válidos. Si aún no creaste contraseña, pide el enlace al correo.", true);
+});
+$("#send-btn").addEventListener("click", async () => {
   const email = $("#email").value.trim().toLowerCase();
   if (!/^\S+@\S+\.\S+$/.test(email)) { showLogin("Escribe un correo válido.", true); return; }
   $("#send-btn").disabled = true;
   const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
   $("#send-btn").disabled = false;
-  if (error) { showLogin("No se pudo enviar el acceso: " + error.message, true); return; }
-  $("#otp-box").hidden = false;
-  showLogin("Te enviamos un correo. Abre el enlace desde este teléfono o escribe aquí el código.");
+  if (error) { showLogin("No se pudo enviar el enlace: " + error.message, true); return; }
+  showLogin("Te enviamos un correo. Ábrelo en este teléfono y toca el enlace. Una vez dentro, crea una contraseña (sección Acceso, al final de la pantalla) para entrar directo desde la app instalada.");
 });
-$("#otp-btn").addEventListener("click", async () => {
-  const email = $("#email").value.trim().toLowerCase(), token = $("#otp").value.trim();
-  if (!token) return;
-  const { error } = await sb.auth.verifyOtp({ email, token, type: "email" });
-  if (error) showLogin("Código no válido o vencido. Pide uno nuevo.", true);
+
+// Contraseña y cierre de sesión (pie de Resumen)
+document.addEventListener("submit", async (ev) => {
+  if (ev.target.id !== "pw-form") return;
+  ev.preventDefault();
+  const p1 = $("#pw1").value, msg = $("#pw-msg");
+  if (p1.length < 8) { msg.hidden = false; msg.className = "msg err"; msg.textContent = "Usa al menos 8 caracteres."; return; }
+  const { error } = await sb.auth.updateUser({ password: p1 });
+  msg.hidden = false; msg.className = "msg" + (error ? " err" : "");
+  msg.textContent = error ? "No se pudo guardar: " + error.message : "Contraseña guardada. Ya puedes entrar con correo y contraseña.";
+  if (!error) $("#pw1").value = "";
+});
+document.addEventListener("click", async (ev) => {
+  if (ev.target.id === "logout-btn") { await sb.auth.signOut(); }
 });
 
 sb.auth.onAuthStateChange((evt, session) => {
