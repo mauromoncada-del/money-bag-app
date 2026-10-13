@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Money Bag</title>
+<meta name="description" content="Tablero personal de inversiones con precios en vivo">
+<meta name="theme-color" content="#F2F4F0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1412" media="(prefers-color-scheme: dark)">
+<meta name="robots" content="noindex,nofollow">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Concepto: libreta de mesa de dinero. Papel verde-gris, tinta oscura, latón
+   como acento (la "bolsa"); verde/rojo/ámbar solo para estado. */
+:root{
+  --bg:#F2F4F0; --surface:#FFFFFF; --sunk:#E8ECE6; --ink:#16201B; --muted:#5B6862;
+  --line:#D8DED6; --brass:#9A6F1E; --brass-soft:#F3E6C8;
+  --up:#1F7A45; --up-soft:#E1F1E6; --down:#B23A2E; --down-soft:#F8E3E0;
+  --warn:#9A6400; --warn-soft:#F7EBCF;
+  --f-ui:"Archivo",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-num:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  --r:12px; color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#0E1412; --surface:#151D1A; --sunk:#1B2521; --ink:#E6ECE8; --muted:#94A39B;
+    --line:#26312C; --brass:#D6AA55; --brass-soft:#2E2715;
+    --up:#4CC07F; --up-soft:#173123; --down:#F07A6B; --down-soft:#3A1E1A;
+    --warn:#E5B04A; --warn-soft:#33290F; color-scheme:dark; }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 var(--f-ui);-webkit-font-smoothing:antialiased;
+  padding-top:env(safe-area-inset-top,0px)}
+[hidden]{display:none!important}
+button{font:inherit;color:inherit}
+a{color:inherit}
+.num{font-family:var(--f-num);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.up{color:var(--up)} .down{color:var(--down)} .muted{color:var(--muted)}
+.wrap{max-width:760px;margin:0 auto;padding-inline:16px;padding-block:0 calc(88px + env(safe-area-inset-bottom,0px))}
+
+/* Barra superior */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.top-in{max-width:760px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:10px}
+.brand{white-space:nowrap;font-weight:800;font-size:19px;letter-spacing:-.02em;display:flex;align-items:center;gap:8px}
+.brand i{width:22px;height:22px;border-radius:7px;background:var(--brass);display:inline-grid;place-items:center;
+  color:var(--bg);font-style:normal;font-size:13px;font-weight:800}
+.status{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);min-width:0}
+.status span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
+.dot.live{background:var(--up);box-shadow:0 0 0 3px var(--up-soft)}
+.dot.stale{background:var(--warn)}
+.icon-btn{border:1px solid var(--line);background:var(--surface);border-radius:10px;width:36px;height:36px;
+  display:grid;place-items:center;cursor:pointer;flex:none}
+.icon-btn:focus-visible,.tab:focus-visible,.chip:focus-visible,.row:focus-visible,.btn:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
+.spin svg{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin svg{animation:none}}
+
+/* Navegación inferior */
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);
+  padding-bottom:env(safe-area-inset-bottom,0px)}
+.tabs-in{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}
+.tab{border:0;background:none;padding:10px 4px 9px;display:flex;flex-direction:column;align-items:center;gap:3px;
+  font-size:11.5px;font-weight:600;color:var(--muted);cursor:pointer;letter-spacing:.01em}
+.tab svg{width:21px;height:21px}
+.tab[aria-selected="true"]{color:var(--ink)}
+.tab[aria-selected="true"] svg{color:var(--brass)}
+
+/* Secciones */
+section.view{display:grid;gap:14px;padding-top:14px}
+h2{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:6px 2px 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px}
+.card.flush{padding:0;overflow:hidden}
+.sub{font-size:12.5px;color:var(--muted)}
+
+/* Hero de cartera */
+.hero{display:grid;gap:10px}
+.hero .label{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+.hero .big{font-size:34px;font-weight:600;line-height:1.05}
+.hero .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;border-top:1px solid var(--line);padding-top:10px}
+.kv .k{font-size:11.5px;color:var(--muted)} .kv .v{font-size:15px;font-weight:500}
+
+/* Listas de texto */
+.list{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.list li{display:grid;grid-template-columns:18px 1fr;gap:8px;align-items:baseline;font-size:14.5px}
+.list li .ic{font-size:12px;text-align:center}
+.pill{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 8px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.pill.verde{background:var(--up-soft);color:var(--up)} .pill.rojo{background:var(--down-soft);color:var(--down)}
+.pill.amarillo{background:var(--warn-soft);color:var(--warn)} .pill.neutro{background:var(--sunk);color:var(--muted)}
+.pill.brass{background:var(--brass-soft);color:var(--brass)}
+
+/* Top 5 */
+.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.rank{display:grid;gap:0}
+.rank .r{display:grid;grid-template-columns:22px 58px 1fr auto;gap:8px;align-items:center;padding:9px 0;border-top:1px solid var(--line);cursor:pointer}
+.rank .r:first-of-type{border-top:0}
+.rank .n{font-size:12px;color:var(--muted)}
+.rank .t{font-weight:700}
+
+/* Barra de rango piso-techo */
+.range{position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,var(--up-soft),var(--sunk) 50%,var(--down-soft))}
+.range .mk{position:absolute;top:50%;width:12px;height:12px;border-radius:50%;background:var(--ink);border:2px solid var(--surface);transform:translate(-50%,-50%)}
+
+/* Watchlist */
+.toolbar{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+.toolbar::-webkit-scrollbar{display:none}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;white-space:nowrap;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:12px 14px;border-top:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left}
+.row:first-child{border-top:0}
+.row .tk{font-weight:700;font-size:15.5px;display:flex;align-items:center;gap:6px;min-width:0}
+.row .nm{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .px{text-align:right;font-size:15px;font-weight:500}
+.row .ch{text-align:right;font-size:12.5px}
+.row .bar{grid-column:1/-1;display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;font-size:11px;color:var(--muted);margin-top:4px}
+.own{width:6px;height:6px;border-radius:50%;background:var(--brass);flex:none}
+.alert-tag{font-size:11px;font-weight:600;color:var(--warn)}
+
+/* Barras horizontales (concentración) */
+.hbar{display:grid;grid-template-columns:minmax(90px,38%) 1fr 54px;gap:10px;align-items:center;font-size:13px;padding:5px 0}
+.hbar .track{height:8px;border-radius:4px;background:var(--sunk);position:relative;overflow:hidden}
+.hbar .fill{position:absolute;inset:0 auto 0 0;background:var(--brass);border-radius:4px}
+.hbar .fill.over{background:var(--down)}
+.hbar .cap{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--muted);opacity:.55}
+.hbar .lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Tablas */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.r,th.r{text-align:right}
+
+/* Ficha de ticker */
+.sheet-bg{position:fixed;inset:0;background:rgba(10,14,12,.45);z-index:40;display:flex;align-items:flex-end;justify-content:center}
+.sheet{background:var(--bg);width:100%;max-width:760px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;
+  padding:8px 16px calc(24px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line)}
+.grab{width:42px;height:4px;border-radius:2px;background:var(--line);margin:4px auto 10px}
+.sheet-head{display:flex;align-items:flex-start;gap:10px;position:sticky;top:-8px;background:var(--bg);padding:6px 0 10px;z-index:2}
+.sheet-head h3{margin:0;font-size:24px;font-weight:800;letter-spacing:-.02em}
+.sheet-head .x{margin-left:auto}
+.stack{display:grid;gap:12px}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.metric .k{font-size:11.5px;color:var(--muted)} .metric .v{font-size:15px;font-weight:500}
+.spark{width:100%;height:56px;display:block}
+
+/* Login */
+.login{min-height:100%;display:grid;place-items:center;padding:24px 16px}
+.login .card{width:100%;max-width:380px;display:grid;gap:14px;padding:22px}
+.login h1{margin:0;font-size:28px;font-weight:800;letter-spacing:-.03em}
+label{font-size:12.5px;font-weight:600;color:var(--muted)}
+input{width:100%;font:16px var(--f-ui);padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+input:focus{outline:2px solid var(--brass);outline-offset:1px}
+.btn{border:0;border-radius:10px;padding:12px 16px;font-weight:700;background:var(--ink);color:var(--bg);cursor:pointer;width:100%}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.msg{font-size:13px;padding:10px 12px;border-radius:10px;background:var(--sunk)}
+.msg.err{background:var(--down-soft);color:var(--down)}
+
+.empty{padding:22px 14px;text-align:center;color:var(--muted);font-size:14px}
+.banner{font-size:13px;border-radius:10px;padding:10px 12px;background:var(--warn-soft);color:var(--warn)}
+.foot{font-size:11.5px;color:var(--muted);text-align:center;padding:8px 0 2px}
+.masked .amt{filter:blur(7px);user-select:none}
+</style>
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form class="card" id="login-form" novalidate>
+    <div>
+      <h1>Money Bag</h1>
+      <p class="sub" style="margin:4px 0 0">Tu tablero de inversiones. Entra con tu correo.</p>
+    </div>
+    <div style="display:grid;gap:6px">
+      <label for="email">Correo</label>
+      <input id="email" type="email" autocomplete="email" inputmode="email" required>
+    </div>
+    <button class="btn" id="send-btn" type="submit">Enviarme el acceso</button>
+    <div id="otp-box" hidden style="display:grid;gap:6px">
+      <label for="otp">Código del correo</label>
+      <input id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="Código de 6 dígitos">
+      <button class="btn ghost" id="otp-btn" type="button">Entrar con el código</button>
+    </div>
+    <div id="login-msg" class="msg" hidden></div>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="top"><div class="top-in">
+    <div class="brand"><i>$</i>Money Bag</div>
+    <div class="status" id="status"><span class="dot" id="dot"></span><span id="status-txt">Cargando…</span></div>
+    <button class="icon-btn" id="mask-btn" type="button" aria-label="Ocultar montos" title="Ocultar montos">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
+    <button class="icon-btn" id="refresh-btn" type="button" aria-label="Actualizar precios" title="Actualizar precios">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    </button>
+  </div></header>
+
+  <main class="wrap">
+    <div id="banner" class="banner" hidden style="margin-top:14px"></div>
+    <section class="view" id="v-resumen"></section>
+    <section class="view" id="v-watch" hidden></section>
+    <section class="view" id="v-cartera" hidden></section>
+    <section class="view" id="v-macro" hidden></section>
+  </main>
+
+  <nav class="tabs" aria-label="Secciones"><div class="tabs-in" role="tablist">
+    <button class="tab" role="tab" data-v="resumen" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Resumen</button>
+    <button class="tab" role="tab" data-v="watch" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Watchlist</button>
+    <button class="tab" role="tab" data-v="cartera" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 4h6l-1.5 3h-3z"/><path d="M10.5 7C6 9 4 13 4 16a4 4 0 0 0 4 4h8a4 4 0 0 0 4-4c0-3-2-7-6.5-9"/><path d="M12 11v6M10 13h3a1 1 0 0 1 0 2h-2a1 1 0 0 0 0 2h3"/></svg>Cartera</button>
+    <button class="tab" role="tab" data-v="macro" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>Macro</button>
+  </div></nav>
+</div>
+
+<div id="sheet" class="sheet-bg" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

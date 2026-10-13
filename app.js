@@ -1,0 +1,626 @@
+/* Money Bag — app personal de inversiones.
+ *
+ * Dos fuentes:
+ *  1. Snapshot diario en Supabase (tabla inv_snapshot): 'mercado' y 'cuenta'.
+ *     Lo genera exportar_app.py 1 vez al dia (niveles, fundamentales, IBKR...).
+ *  2. Precios en vivo (funcion inv-precios) cada vez que se abre la app.
+ *
+ * Con el precio del momento se recalcula aqui: % del dia, 1S/1M/3M/1A, R:B y
+ * posicion en el rango por horizonte, semaforo, alertas de cruce, Top 5,
+ * upside vs precio objetivo, valor y P&L de la cartera, concentracion por
+ * ticker/sector/bloque, liquidez y el panel DCLA (Art. I, III y V).
+ * Las formulas son las mismas de technical_levels.py e ibkr_flex.py.
+ */
+(() => {
+"use strict";
+const CFG = window.MB_CONFIG;
+const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+});
+
+const S = { M: null, C: null, Q: {}, qAt: null, loadingQ: false, view: "resumen", sector: "Todos", sort: "sector", masked: false };
+try { S.masked = localStorage.getItem("mb_masked") === "1"; S.view = localStorage.getItem("mb_view") || "resumen"; } catch (_) {}
+
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// El briefing viene con <strong>/<em> generados por nuestro propio Python: se
+// escapa todo y se re-permiten solo esas dos etiquetas.
+const safeRich = (s) => esc(s).replace(/&lt;(\/?)(strong|em)&gt;/g, "<$1$2>");
+const isNum = (v) => typeof v === "number" && isFinite(v);
+
+// ── Formato ────────────────────────────────────────────────────────────────
+const nf = (d) => new Intl.NumberFormat("es-CO", { minimumFractionDigits: d, maximumFractionDigits: d });
+function fPrice(v) {
+  if (!isNum(v)) return "—";
+  const d = v >= 1000 ? 0 : v >= 1 ? 2 : 4;
+  return "$" + nf(d).format(v);
+}
+function fUsd(v, opts = {}) {
+  if (!isNum(v)) return "—";
+  const sign = opts.sign ? (v > 0 ? "+" : v < 0 ? "−" : "") : (v < 0 ? "−" : "");
+  const a = Math.abs(v);
+  const body = a >= 1e6 ? nf(2).format(a / 1e6) + " M" : nf(a >= 1000 ? 0 : 2).format(a);
+  return `<span class="amt">${sign}$${body}</span>`;
+}
+function fPct(v, d = 1, sign = true) {
+  if (!isNum(v)) return "—";
+  const s = sign ? (v > 0 ? "+" : v < 0 ? "−" : "") : v < 0 ? "−" : "";
+  return s + nf(d).format(Math.abs(v)) + "%";
+}
+const cls = (v) => (isNum(v) ? (v > 0 ? "up" : v < 0 ? "down" : "") : "");
+function fTime(ms) {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" });
+}
+function fDate(iso, withYear = false) {
+  if (!iso) return "—";
+  const d = new Date(iso.length <= 10 ? iso + "T12:00:00" : iso);
+  return d.toLocaleDateString("es-CO", { day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}) });
+}
+function daysUntil(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + "T12:00:00"); const n = new Date(); n.setHours(12, 0, 0, 0);
+  return Math.round((d - n) / 86400000);
+}
+const semClass = (s) => ({ Verde: "verde", Amarillo: "amarillo", Rojo: "rojo", VERDE: "verde", AMARILLO: "amarillo", ROJO: "rojo" }[s] || "neutro");
+const verClass = (v) => ({ "Califica": "verde", "Vigilar": "amarillo", "No califica": "rojo" }[v] || "neutro");
+const TIER_NAME = { tactico: "Táctico 6m", estructural: "Estructural 2a", historico: "Histórico 5a" };
+
+// ── Lógica de niveles (port de technical_levels.py) ─────────────────────────
+const RIESGO_MIN = 1.0, RATIO_TOPE = 10.0;
+function riesgoBeneficio(piso, techo, precio) {
+  if (!piso || !techo || !isNum(precio) || precio <= 0) return null;
+  const p = piso.precio, t = techo.precio;
+  if (!isNum(p) || !isNum(t) || t <= p) return null;
+  const riesgo = (precio - p) / precio, benef = (t - precio) / precio;
+  const pos = Math.max(0, Math.min(1, (precio - p) / (t - p)));
+  const ratio = riesgo <= 0 ? null : Math.round((benef / riesgo) * 10) / 10;
+  const confiable = ratio !== null && riesgo * 100 >= RIESGO_MIN;
+  let sem;
+  if (pos < 0.35 && ratio !== null && ratio > 2) sem = "Verde";
+  else if (pos > 0.65 || ratio === null || ratio < 1) sem = "Rojo";
+  else sem = "Amarillo";
+  return { ratio, confiable, riesgo_pct: riesgo * 100, beneficio_pct: benef * 100, posicion: pos, semaforo: sem };
+}
+function fRatio(rb) {
+  if (!rb) return "—";
+  if (rb.ratio === null) return "bajo piso";
+  if (!rb.confiable) return "en piso";
+  return (rb.ratio >= RATIO_TOPE ? ">" + RATIO_TOPE : nf(1).format(rb.ratio)) + "x";
+}
+function liveLevels(t) {
+  const info = S.M.tickers[t] || {};
+  const nt = info.niveles || {};
+  const price = livePrice(t);
+  if (nt.error || !nt.niveles || !isNum(price)) return { price, err: nt.error || (isNum(price) ? null : "sin precio"), nt };
+  const niv = nt.niveles;
+  const tiers = {};
+  for (const k of ["tactico", "estructural", "historico"]) {
+    const x = niv[k] || {};
+    tiers[k] = { ...x, rbLive: riesgoBeneficio(x.piso, x.techo, price) };
+  }
+  const pisoRef = niv.tactico?.piso || niv.estructural?.piso || niv.historico?.piso;
+  const techoRef = niv.tactico?.techo || niv.estructural?.techo || niv.historico?.techo;
+  let alerta = null, alertaTipo = null;
+  if (pisoRef && price <= pisoRef.precio * 1.02) {
+    const d = (price / pisoRef.precio - 1) * 100; alertaTipo = "piso";
+    alerta = d <= 0 ? `cruzó su piso de compra (${fPrice(pisoRef.precio)}), ${nf(1).format(Math.abs(d))}% por debajo`
+                    : `está a ${nf(1).format(d)}% de su piso de compra (${fPrice(pisoRef.precio)})`;
+  } else if (techoRef && price >= techoRef.precio * 0.98) {
+    const d = (1 - price / techoRef.precio) * 100; alertaTipo = "techo";
+    alerta = d <= 0 ? `cruzó su techo de venta (${fPrice(techoRef.precio)}), ${nf(1).format(Math.abs(d))}% por encima`
+                    : `está a ${nf(1).format(d)}% de su techo de venta (${fPrice(techoRef.precio)})`;
+  }
+  const rb = riesgoBeneficio(pisoRef, techoRef, price);
+  return { price, nt, tiers, pisoRef, techoRef, rb, alerta, alertaTipo };
+}
+function topOportunidades(n = 5) {
+  const cands = [];
+  for (const t of allTickers()) {
+    const L = liveLevels(t);
+    if (!L.rb) continue;
+    cands.push({ t, L, ver: L.nt.veredicto });
+  }
+  const sc = (c) => 1 - c.L.rb.posicion + ({ Califica: 0.15, Vigilar: 0.05 }[c.ver] || 0) + ({ Verde: 0.10, Amarillo: 0.03 }[c.L.rb.semaforo] || 0);
+  const sv = (c) => c.L.rb.posicion + ({ "No califica": 0.05, Vigilar: 0.02 }[c.ver] || 0) + (c.L.rb.semaforo === "Rojo" ? 0.05 : 0);
+  const compra = cands.filter((c) => c.L.rb.semaforo !== "Rojo").sort((a, b) => sc(b) - sc(a)).slice(0, n);
+  const venta = cands.filter((c) => c.L.rb.semaforo !== "Verde").sort((a, b) => sv(b) - sv(a)).slice(0, n);
+  return { compra, venta };
+}
+
+// ── Precios ────────────────────────────────────────────────────────────────
+function allTickers() { return Object.keys(S.M?.tickers || {}); }
+function livePrice(t) {
+  const q = S.Q[t];
+  if (q && isNum(q.price)) return q.price;
+  const pos = S.C?.posiciones?.[t];
+  const snap = S.M?.tickers?.[t]?.precio_snapshot;
+  return isNum(snap) ? snap : pos?.mark_price ?? null;
+}
+function liveChg(t) {
+  const q = S.Q[t];
+  if (q && isNum(q.chgPct)) return q.chgPct;
+  return S.M?.tickers?.[t]?.chg_snapshot ?? null;
+}
+function prevClose(t) { return S.Q[t]?.prevClose ?? null; }
+function periodReturns(t) {
+  const info = S.M.tickers[t] || {}, refs = info.ref_cierres || {}, p = livePrice(t), out = {};
+  for (const k of ["1w", "1m", "3m", "1y"]) out[k] = isNum(refs[k]) && isNum(p) ? (p / refs[k] - 1) * 100 : info.hist?.[k] ?? null;
+  return out;
+}
+const yahoo = (t) => t.replace(/\s+/g, "-");
+
+async function loadQuotes() {
+  if (S.loadingQ || !S.M) return;
+  S.loadingQ = true; setStatus();
+  try {
+    const syms = [...new Set([...allTickers(), ...Object.keys(S.C?.posiciones || {}), ...CFG.macroSymbols].map(yahoo))];
+    const { data, error } = await sb.functions.invoke("inv-precios", { body: { symbols: syms } });
+    if (error) throw error;
+    const q = data?.quotes || {};
+    const map = {};
+    for (const t of new Set([...allTickers(), ...Object.keys(S.C?.posiciones || {}), ...CFG.macroSymbols])) map[t] = q[yahoo(t)] || null;
+    S.Q = map; S.qAt = data?.at || Date.now(); S.qErr = null;
+  } catch (e) {
+    S.qErr = "No se pudieron traer precios en vivo. Se muestran los del cierre del snapshot.";
+    console.warn(e);
+  } finally { S.loadingQ = false; render(); }
+}
+
+// ── Cartera en vivo (port de ibkr_flex.py) ─────────────────────────────────
+function portfolio() {
+  const C = S.C; if (!C?.posiciones) return null;
+  const cfg = S.M?.config || {};
+  const rows = [];
+  let total = 0, day = 0, dayKnown = false, unreal = 0, cost = 0;
+  for (const [sym, p] of Object.entries(C.posiciones)) {
+    const px = S.Q[sym]?.price ?? p.mark_price ?? livePrice(sym);
+    const value = isNum(px) && isNum(p.qty) ? px * p.qty : p.position_value;
+    const pc = prevClose(sym);
+    const dayPnl = isNum(pc) && isNum(px) ? (px - pc) * p.qty : null;
+    const un = isNum(p.avg_cost) && isNum(px) ? (px - p.avg_cost) * p.qty : null;
+    if (isNum(value)) total += value;
+    if (isNum(dayPnl)) { day += dayPnl; dayKnown = true; }
+    if (isNum(un)) { unreal += un; cost += p.avg_cost * p.qty; }
+    rows.push({ sym, qty: p.qty, avg: p.avg_cost, px, value, dayPnl, un, unPct: isNum(un) && p.avg_cost ? (px / p.avg_cost - 1) * 100 : null,
+      sector: (cfg.sector_map || {})[sym] || "Sin clasificar", sem: C.semaforo?.[sym] });
+  }
+  const caja = isNum(C.caja) ? C.caja : 0;
+  const nav = total + caja;
+  rows.forEach((r) => (r.peso = nav > 0 && isNum(r.value) ? (r.value / nav) * 100 : null));
+  rows.sort((a, b) => (b.value || 0) - (a.value || 0));
+
+  const sectores = {};
+  rows.forEach((r) => (sectores[r.sector] = (sectores[r.sector] || 0) + (r.value || 0)));
+  const porSector = Object.entries(sectores).map(([k, v]) => ({ k, pct: nav > 0 ? (v / nav) * 100 : 0 })).sort((a, b) => b.pct - a.pct);
+
+  const bloquesCfg = cfg.bloques || {}, tope = cfg.tope_bloque_pct ?? 25;
+  const asignado = {};
+  const bloques = Object.entries(bloquesCfg).map(([nombre, miembros]) => {
+    let v = 0; const quienes = [];
+    for (const r of rows) {
+      const f = miembros[r.sym.toUpperCase()];
+      if (f && isNum(r.value)) { v += r.value * f; quienes.push(r.sym); asignado[r.sym] = true; }
+    }
+    return { k: nombre, pct: nav > 0 ? (v / nav) * 100 : 0, quienes, excede: nav > 0 && (v / nav) * 100 > tope };
+  }).filter((b) => b.quienes.length);
+  const resto = rows.filter((r) => !asignado[r.sym]).reduce((s, r) => s + (r.value || 0), 0);
+  if (resto > 0) bloques.push({ k: cfg.bloque_residual || "Sin agrupar", pct: nav > 0 ? (resto / nav) * 100 : 0, residual: true, quienes: [] });
+  bloques.sort((a, b) => (a.residual ? 1 : 0) - (b.residual ? 1 : 0) || b.pct - a.pct);
+
+  const liquidezPct = nav > 0 ? (caja / nav) * 100 : null;
+  const apal = nav > 0 && caja < 0 ? (-caja / nav) * 100 : 0;
+
+  // DCLA en vivo
+  const criptoSet = new Set(Object.keys(bloquesCfg["Bitcoin (exposición efectiva)"] || {}));
+  const art1 = {
+    sub5: rows.filter((r) => isNum(r.px) && r.px < 5).map((r) => r.sym),
+    cripto: rows.filter((r) => criptoSet.has(r.sym.toUpperCase())).map((r) => r.sym),
+    margen_hoy: apal > 0, margen_mtd: !!C.liquidez?.uso_margen_mtd,
+  };
+  const topeT = cfg.tope_ticker_pct ?? 15;
+  const art3 = { tickers: rows.filter((r) => r.peso > topeT).map((r) => [r.sym, r.peso]), bloques: bloques.filter((b) => b.excede).map((b) => [b.k, b.pct]) };
+  const art5 = { tactica: [], estructural: [], sin: [] };
+  for (const r of rows) {
+    const nt = S.M?.tickers?.[r.sym]?.niveles || {};
+    const dt = nt.defensa_tactica, de = nt.defensa_estructural;
+    if (!isNum(r.px) || (dt == null && de == null)) { art5.sin.push(r.sym); continue; }
+    if (isNum(dt) && r.px < dt) art5.tactica.push(r.sym);
+    if (isNum(de) && r.px < de) art5.estructural.push(r.sym);
+  }
+  const viol = art1.sub5.length + art1.cripto.length + (art1.margen_hoy ? 1 : 0) + (art1.margen_mtd ? 1 : 0) +
+    art3.tickers.length + art3.bloques.length + art5.tactica.length + art5.estructural.length;
+
+  return { rows, total, caja, nav, day: dayKnown ? day : null, dayPct: dayKnown && nav - day > 0 ? (day / (nav - day)) * 100 : null,
+    unreal, unrealPct: cost > 0 ? (unreal / cost) * 100 : null, porSector, bloques, tope, liquidezPct, apal,
+    dcla: { art1, art3, art5, viol }, topeT };
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function setStatus() {
+  const dot = $("#dot"), txt = $("#status-txt"), btn = $("#refresh-btn");
+  btn.classList.toggle("spin", S.loadingQ);
+  if (S.loadingQ) { dot.className = "dot"; txt.textContent = "Actualizando…"; return; }
+  if (S.qErr || !S.qAt) { dot.className = "dot stale"; txt.textContent = S.M ? "Precios del snapshot" : "Sin datos"; return; }
+  const ses = S.Q.SPY?.session;
+  const lbl = { pre: "pre", regular: "abierto", post: "post", closed: "cerrado" }[ses] || "";
+  dot.className = "dot live"; txt.textContent = `${fTime(S.qAt)}${lbl ? " · " + lbl : ""}`;
+}
+
+function render() {
+  setStatus();
+  document.body.classList.toggle("masked", S.masked);
+  if (!S.M) return;
+  const ban = $("#banner");
+  const ageH = (Date.now() - new Date(S.M.generado).getTime()) / 3.6e6;
+  const msgs = [];
+  if (S.qErr) msgs.push(S.qErr);
+  if (ageH > 30) msgs.push(`El cálculo diario es del ${fDate(S.M.generado)} (hace ${Math.round(ageH / 24)} días). Revisa el proceso en GitHub.`);
+  ban.hidden = !msgs.length; ban.textContent = msgs.join(" ");
+  renderResumen(); renderWatch(); renderCartera(); renderMacro();
+  for (const v of ["resumen", "watch", "cartera", "macro"]) $("#v-" + v).hidden = S.view !== v;
+  document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.v === S.view)));
+}
+
+function rangeBar(rb) {
+  if (!rb) return `<div class="range" style="opacity:.35"></div>`;
+  return `<div class="range" title="Posición en el rango piso–techo"><span class="mk" style="left:${(rb.posicion * 100).toFixed(1)}%"></span></div>`;
+}
+
+function renderResumen() {
+  const el = $("#v-resumen");
+  const P = portfolio();
+  const parts = [];
+
+  if (P) {
+    parts.push(`<div class="card hero">
+      <div><div class="label">Valor de la cartera</div><div class="big num">${fUsd(P.nav)}</div></div>
+      <div class="grid3">
+        <div class="kv"><div class="k">Hoy</div><div class="v num ${cls(P.day)}">${fUsd(P.day, { sign: true })}<div class="sub num ${cls(P.dayPct)}">${fPct(P.dayPct, 2)}</div></div></div>
+        <div class="kv"><div class="k">No realizado</div><div class="v num ${cls(P.unreal)}">${fUsd(P.unreal, { sign: true })}<div class="sub num ${cls(P.unrealPct)}">${fPct(P.unrealPct, 1)}</div></div></div>
+        <div class="kv"><div class="k">Liquidez</div><div class="v num">${fPct(P.liquidezPct, 1, false)}<div class="sub">${P.dcla.viol ? `<span class="pill rojo">${P.dcla.viol} alerta${P.dcla.viol > 1 ? "s" : ""} DCLA</span>` : `<span class="pill verde">DCLA ok</span>`}</div></div></div>
+      </div></div>`);
+  }
+
+  // Alertas de cruce en vivo
+  const alertas = allTickers().map((t) => ({ t, L: liveLevels(t) })).filter((x) => x.L.alerta);
+  const own = new Set(Object.keys(S.C?.posiciones || {}));
+  alertas.sort((a, b) => (own.has(b.t) - own.has(a.t)) || (a.L.alertaTipo === "piso" ? -1 : 1));
+  parts.push(`<h2>Alertas en vivo</h2><div class="card">${alertas.length ? `<ul class="list">${alertas.map(({ t, L }) =>
+    `<li><span class="ic">${L.alertaTipo === "piso" ? "▼" : "▲"}</span><span><a href="#" data-t="${esc(t)}" style="text-decoration:none"><strong>${esc(disp(t))}</strong></a>${own.has(t) ? ' <span class="own" style="display:inline-block;vertical-align:middle"></span>' : ""} ${esc(L.alerta)}.</span></li>`).join("")}</ul>`
+    : `<div class="sub">Ningún ticker está a menos de 2% de su piso o techo con el precio de ahora.</div>`}</div>`);
+
+  // Briefing del cálculo diario
+  const b = S.M.briefing || {};
+  const items = [
+    ...(b.acciones || []).map((x) => ["⚠️", x]), ...(b.cambios || []).map((x) => ["↻", x]),
+    ...(b.foto_inicial || []).map((x) => ["•", x]), ...(b.contexto || []).map((x) => ["◎", x]),
+  ];
+  parts.push(`<h2>Resumen del día · ${fDate(S.M.generado)}</h2><div class="card">${items.length ? `<ul class="list">${items.map(([i, x]) => `<li><span class="ic">${i}</span><span>${safeRich(x)}</span></li>`).join("")}</ul>` : `<div class="sub">Sin cambios de señal desde el cálculo anterior.</div>`}</div>`);
+
+  // Top 5
+  const { compra, venta } = topOportunidades(5);
+  const rk = (arr, kind) => arr.length ? arr.map((c, i) => `<div class="r" data-t="${esc(c.t)}" role="button" tabindex="0">
+      <span class="n num">${i + 1}</span><span class="t">${esc(disp(c.t))}</span>
+      <span>${rangeBar(c.L.rb)}</span>
+      <span class="num" style="font-size:12.5px">${kind === "c" ? "R:B " + fRatio(c.L.rb) : nf(0).format(c.L.rb.posicion * 100) + "%"}</span></div>`).join("")
+    : `<div class="sub">Sin candidatos genuinos ahora.</div>`;
+  parts.push(`<h2>Top 5 con el precio de ahora</h2><div class="duo">
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px"><strong>Comprar · cerca del piso</strong><span class="pill verde">entrada</span></div><div class="rank">${rk(compra, "c")}</div></div>
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px"><strong>Vender · cerca del techo</strong><span class="pill rojo">utilidad</span></div><div class="rank">${rk(venta, "v")}</div></div></div>`);
+
+  // Próximos earnings
+  const ev = (S.M.proximos_eventos || []).map((e) => ({ ...e, d: daysUntil(e.fecha) })).filter((e) => e.d !== null && e.d >= 0 && e.d <= 21);
+  parts.push(`<h2>Earnings próximos 3 semanas</h2><div class="card">${ev.length ? `<table><tbody>${ev.map((e) => {
+    const ai = S.M.tickers[e.ticker]?.earnings || {};
+    const peso = P?.rows.find((r) => r.sym === e.ticker)?.peso;
+    return `<tr data-t="${esc(e.ticker)}" style="cursor:pointer"><td><strong>${esc(disp(e.ticker))}</strong>${own.has(e.ticker) ? ` <span class="sub num">${fPct(peso, 1, false)} cartera</span>` : ""}</td>
+      <td>${fDate(e.fecha)}</td><td class="r sub">${e.d === 0 ? "hoy" : e.d === 1 ? "mañana" : "en " + e.d + " días"}</td>
+      <td class="r">${ai.tendencia_revisiones ? `<span class="pill ${ai.tendencia_revisiones === "subiendo" ? "verde" : ai.tendencia_revisiones === "bajando" ? "rojo" : "neutro"}">rev. ${esc(ai.tendencia_revisiones)}</span>` : ""}</td></tr>`;
+  }).join("")}</tbody></table>` : `<div class="sub">Ninguno del watchlist reporta en las próximas 3 semanas.</div>`}</div>`);
+
+  parts.push(`<div class="foot">Cálculo diario: ${fDate(S.M.generado)} ${fTime(new Date(S.M.generado).getTime())} · Precios: ${S.qAt ? fTime(S.qAt) : "snapshot"}</div>`);
+  el.innerHTML = parts.join("");
+}
+
+const disp = (t) => S.M?.tickers?.[t]?.display || t;
+
+function renderWatch() {
+  const el = $("#v-watch");
+  const own = new Set(Object.keys(S.C?.posiciones || {}));
+  const ts = allTickers();
+  const sectores = ["Todos", "En cartera", ...new Set(ts.map((t) => S.M.tickers[t].sector))];
+  let list = ts.filter((t) => S.sector === "Todos" || (S.sector === "En cartera" ? own.has(t) : S.M.tickers[t].sector === S.sector));
+  const L = Object.fromEntries(list.map((t) => [t, liveLevels(t)]));
+  const ord = { sector: null, dia: (t) => -(liveChg(t) ?? -1e9), rango: (t) => L[t].rb ? L[t].rb.posicion : 2 };
+  if (S.sort === "sector") list.sort((a, b) => (S.M.tickers[a].tipo === "cripto" ? -1 : 0) - (S.M.tickers[b].tipo === "cripto" ? -1 : 0) || S.M.tickers[a].sector.localeCompare(S.M.tickers[b].sector) || a.localeCompare(b));
+  else list.sort((a, b) => ord[S.sort](a) - ord[S.sort](b));
+
+  const rows = list.map((t) => {
+    const info = S.M.tickers[t], l = L[t], ch = liveChg(t);
+    return `<button class="row" data-t="${esc(t)}" type="button">
+      <div style="min-width:0"><div class="tk">${esc(disp(t))}${own.has(t) ? '<span class="own" title="En tu cartera"></span>' : ""}
+        ${l.nt?.veredicto ? `<span class="pill ${verClass(l.nt.veredicto)}">${esc(l.nt.veredicto)}</span>` : ""}</div>
+        <div class="nm">${esc(info.nombre)}</div></div>
+      <div><div class="px num">${fPrice(l.price)}</div><div class="ch num ${cls(ch)}">${fPct(ch, 2)}</div></div>
+      <div class="bar"><span class="num">${l.tiers?.tactico?.piso ? fPrice(l.tiers.tactico.piso.precio) : "piso —"}</span>${rangeBar(l.tiers?.tactico?.rbLive || l.rb)}<span class="num">${l.tiers?.tactico?.techo ? fPrice(l.tiers.tactico.techo.precio) : "techo —"}</span></div>
+      ${l.alerta ? `<div class="alert-tag" style="grid-column:1/-1">${esc(l.alerta)}</div>` : ""}
+    </button>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="toolbar" role="group" aria-label="Filtrar">${sectores.map((s) => `<button class="chip" data-sector="${esc(s)}" aria-pressed="${S.sector === s}">${esc(s)}</button>`).join("")}</div>
+    <div class="toolbar" role="group" aria-label="Ordenar">${[["sector", "Por sector"], ["dia", "Mayor % hoy"], ["rango", "Más cerca del piso"]].map(([k, l]) => `<button class="chip" data-sort="${k}" aria-pressed="${S.sort === k}">${l}</button>`).join("")}</div>
+    <div class="card flush">${rows || `<div class="empty">Sin tickers en este filtro.</div>`}</div>
+    <div class="foot">Barra: posición del precio entre el piso y el techo táctico (6 meses).</div>`;
+}
+
+function hbar(lbl, pct, tope, over) {
+  const w = Math.max(0, Math.min(100, pct || 0));
+  return `<div class="hbar"><span class="lbl">${esc(lbl)}</span><span class="track"><span class="fill${over ? " over" : ""}" style="width:${w}%"></span>${tope ? `<span class="cap" style="left:${Math.min(100, tope)}%"></span>` : ""}</span><span class="num" style="text-align:right">${fPct(pct, 1, false)}</span></div>`;
+}
+
+function renderCartera() {
+  const el = $("#v-cartera");
+  const P = portfolio();
+  if (!P) { el.innerHTML = `<div class="card empty">Todavía no hay datos de tu cuenta IBKR. Aparecen después del primer cálculo diario con el Flex Query activo.</div>`; return; }
+  const C = S.C;
+  const pnlT = C.pnl_total || {};
+  const posRows = P.rows.map((r) => `<tr data-t="${esc(r.sym)}" style="cursor:pointer">
+      <td><strong>${esc(disp(r.sym))}</strong>${r.sem ? ` <span class="pill ${semClass(r.sem.estado)}" title="${esc((r.sem.razones || []).join(" · "))}">${esc(r.sem.estado)}</span>` : ""}<div class="sub num"><span class="amt">${nf(r.qty % 1 ? 2 : 0).format(r.qty)}</span> × ${fPrice(r.px)}</div></td>
+      <td class="r num">${fUsd(r.value)}<div class="sub">${fPct(r.peso, 1, false)}</div></td>
+      <td class="r num ${cls(r.dayPnl)}">${fUsd(r.dayPnl, { sign: true })}</td>
+      <td class="r num ${cls(r.un)}">${fUsd(r.un, { sign: true })}<div class="sub ${cls(r.unPct)}">${fPct(r.unPct, 1)}</div></td></tr>`).join("");
+  const sem = Object.entries(C.semaforo || {}).filter(([, v]) => v && v.estado !== "VERDE");
+  const d = P.dcla;
+  const dl = (arr) => (arr.length ? arr.map((x) => (Array.isArray(x) ? `${esc(disp(x[0]))} ${fPct(x[1], 1, false)}` : esc(disp(x)))).join(", ") : "—");
+  const trades = (C.trades_recientes || []).slice(0, 10);
+
+  el.innerHTML = `
+    <div class="card hero">
+      <div><div class="label">Valor de la cartera (precios de ahora)</div><div class="big num">${fUsd(P.nav)}</div></div>
+      <div class="grid3">
+        <div class="kv"><div class="k">Invertido</div><div class="v num">${fUsd(P.total)}</div></div>
+        <div class="kv"><div class="k">Caja</div><div class="v num ${cls(P.caja)}">${fUsd(P.caja)}</div></div>
+        <div class="kv"><div class="k">P&L realizado</div><div class="v num ${cls(pnlT.realizado_total)}">${fUsd(pnlT.realizado_total, { sign: true })}</div></div>
+      </div>
+    </div>
+    <h2>Posiciones</h2>
+    <div class="card flush tbl-wrap"><table><thead><tr><th>Ticker</th><th class="r">Valor · peso</th><th class="r">Hoy</th><th class="r">No realizado</th></tr></thead><tbody>${posRows}</tbody></table></div>
+
+    <h2>Constitución DCLA · en vivo</h2>
+    <div class="card"><table><tbody>
+      <tr><td>Art. I · acciones bajo $5</td><td class="r">${dl(d.art1.sub5)}</td></tr>
+      <tr><td>Art. I · cripto / proxies</td><td class="r">${dl(d.art1.cripto)}</td></tr>
+      <tr><td>Art. I · margen hoy / este mes</td><td class="r">${d.art1.margen_hoy ? '<span class="pill rojo">hoy</span>' : "no"} · ${d.art1.margen_mtd ? '<span class="pill amarillo">este mes</span>' : "no"}</td></tr>
+      <tr><td>Art. III · tickers sobre ${P.topeT}%</td><td class="r">${dl(d.art3.tickers)}</td></tr>
+      <tr><td>Art. III · bloques sobre ${P.tope}%</td><td class="r">${dl(d.art3.bloques)}</td></tr>
+      <tr><td>Art. V · rompió defensa táctica</td><td class="r">${dl(d.art5.tactica)}</td></tr>
+      <tr><td>Art. V · rompió defensa estructural</td><td class="r">${dl(d.art5.estructural)}</td></tr>
+    </tbody></table>
+    <div class="sub" style="margin-top:8px">${d.viol ? `${d.viol} punto${d.viol > 1 ? "s" : ""} a revisar.` : "Sin violaciones con los precios de ahora."}${d.art5.sin.length ? ` Sin niveles para: ${dl(d.art5.sin)}.` : ""}</div></div>
+
+    <h2>Semáforo Pilar 4</h2>
+    <div class="card">${sem.length ? `<ul class="list">${sem.map(([s, v]) => `<li><span class="ic"><span class="pill ${semClass(v.estado)}" style="padding:0 5px">●</span></span><span><strong>${esc(disp(s))}</strong> · ${esc(v.estado)} — ${esc((v.razones || []).join("; ") || `${v.compras_sin_ganancia} compras sin ganancia`)}</span></li>`).join("")}</ul>` : `<div class="sub">Todas las posiciones en verde.</div>`}</div>
+
+    <h2>Concentración por bloque de riesgo</h2>
+    <div class="card">${P.bloques.map((b) => hbar(b.k + (b.quienes.length ? ` (${b.quienes.map(disp).join(", ")})` : ""), b.pct, b.residual ? null : P.tope, b.excede)).join("")}
+      <div class="sub" style="margin-top:6px">Línea vertical: tope de ${P.tope}% por bloque.</div></div>
+
+    <h2>Concentración por sector</h2>
+    <div class="card">${P.porSector.map((s) => hbar(s.k, s.pct, S.M.config?.tope_sector_pct, s.pct > (S.M.config?.tope_sector_pct ?? 50))).join("")}</div>
+
+    <h2>Liquidez y margen</h2>
+    <div class="card metrics">
+      <div class="metric"><div class="k">Liquidez</div><div class="v num">${fPct(P.liquidezPct, 1, false)}</div><div class="sub">objetivo ${S.M.config?.objetivo_liquidez_pct ?? 15}%</div></div>
+      <div class="metric"><div class="k">Apalancamiento</div><div class="v num ${P.apal > 0 ? "down" : ""}">${fPct(P.apal, 1, false)}</div><div class="sub">tope ${S.M.config?.tope_apalancamiento_pct ?? 20}%</div></div>
+      <div class="metric"><div class="k">Interés margen (mes)</div><div class="v num">${fUsd(C.liquidez?.interes_pagado_mtd)}</div></div>
+    </div>
+
+    ${trades.length ? `<h2>Movimientos recientes</h2><div class="card flush tbl-wrap"><table><thead><tr><th>Fecha</th><th>Ticker</th><th>Op.</th><th class="r">Cant.</th><th class="r">Precio</th></tr></thead><tbody>
+      ${trades.map((t) => `<tr><td class="num">${esc(String(t.date || "").slice(0, 10))}</td><td><strong>${esc(t.symbol)}</strong></td><td><span class="pill ${t.side === "BUY" ? "verde" : "rojo"}">${t.side === "BUY" ? "compra" : "venta"}</span></td><td class="r num"><span class="amt">${nf(2).format(t.qty || 0)}</span></td><td class="r num">${fPrice(t.price)}</td></tr>`).join("")}
+    </tbody></table></div>` : ""}
+    <div class="foot">Posiciones y caja del Flex Query de IBKR (${fDate(C.generado)}); valores recalculados con precios de ahora.</div>`;
+}
+
+function renderMacro() {
+  const el = $("#v-macro");
+  const m = S.M.macro || {};
+  const live = [["SPY", "S&P 500 (SPY)"], ["QQQ", "Nasdaq 100 (QQQ)"], ["^VIX", "VIX"], ["^TNX", "Bono 10 años"], ["DX-Y.NYB", "Índice dólar"], ["BTC-USD", "Bitcoin"]];
+  const tiles = live.map(([s, n]) => {
+    const q = S.Q[s];
+    const v = q?.price; const ch = q?.chgPct;
+    const val = s === "^TNX" ? (isNum(v) ? nf(2).format(v) + "%" : "—") : s === "^VIX" || s === "DX-Y.NYB" ? (isNum(v) ? nf(2).format(v) : "—") : fPrice(v);
+    return `<div class="metric"><div class="k">${n}</div><div class="v num">${val}</div><div class="sub num ${s === "^VIX" || s === "^TNX" ? cls(-ch) : cls(ch)}">${fPct(ch, 2)}</div></div>`;
+  }).join("");
+  const reg = m.regimen;
+  el.innerHTML = `
+    <h2>Mercado ahora</h2><div class="card metrics">${tiles}</div>
+    <h2>Régimen macro · ${fDate(S.M.generado)}</h2>
+    <div class="card stack">
+      <div><span class="pill ${reg === "risk-on" ? "verde" : reg === "risk-off" ? "rojo" : "neutro"}" style="font-size:13px;padding:4px 10px">${esc(reg || "sin dato")}</span>
+        ${isNum(m.regimen_score) ? `<span class="sub num" style="margin-left:6px">puntaje ${nf(0).format(m.regimen_score)}</span>` : ""}</div>
+      ${(m.regimen_detalle || []).length ? `<ul class="list">${m.regimen_detalle.map((x) => `<li><span class="ic">·</span><span>${esc(typeof x === "string" ? x : JSON.stringify(x))}</span></li>`).join("")}</ul>` : ""}
+    </div>
+    <div class="card metrics">
+      <div class="metric"><div class="k">Tesoro 10 años</div><div class="v num">${isNum(m.treasury_10y) ? nf(2).format(m.treasury_10y) + "%" : "—"}</div><div class="sub num">${isNum(m.treasury_10y_delta) ? (m.treasury_10y_delta >= 0 ? "+" : "−") + nf(0).format(Math.abs(m.treasury_10y_delta * 100)) + " pb" : ""}</div></div>
+      <div class="metric"><div class="k">Fed funds</div><div class="v num">${isNum(m.fed_funds) ? nf(2).format(m.fed_funds) + "%" : "—"}</div></div>
+      <div class="metric"><div class="k">Inflación (CPI a/a)</div><div class="v num">${isNum(m.cpi_yoy) ? nf(1).format(m.cpi_yoy) + "%" : "—"}</div></div>
+      <div class="metric"><div class="k">Tasa real</div><div class="v num">${isNum(m.tasa_real) ? nf(2).format(m.tasa_real) + "%" : "—"}</div></div>
+      <div class="metric"><div class="k">Nasdaq vs media 200</div><div class="v num ${cls(m.nasdaq_vs_ma200)}">${fPct(m.nasdaq_vs_ma200, 1)}</div></div>
+      <div class="metric"><div class="k">Dólar (DXY) 1 mes</div><div class="v num ${cls(m.dxy_delta_1m)}">${fPct(m.dxy_delta_1m, 1)}</div></div>
+    </div>
+    <div class="foot">Datos macro de Alpha Vantage y yfinance, del cálculo diario.</div>`;
+}
+
+// ── Ficha de ticker ───────────────────────────────────────────────────────
+function sparkSvg(arr, price) {
+  const pts = (arr || []).filter(isNum).slice();
+  if (isNum(price) && pts.length) pts.push(price);
+  if (pts.length < 2) return "";
+  const W = 320, H = 56, mn = Math.min(...pts), mx = Math.max(...pts), rg = mx - mn || 1;
+  const xy = pts.map((v, i) => [(i / (pts.length - 1)) * (W - 4) + 2, H - 4 - ((v - mn) / rg) * (H - 8)]);
+  const up = pts[pts.length - 1] >= pts[0];
+  const line = xy.map((p) => p.map((n) => n.toFixed(1)).join(",")).join(" ");
+  const col = up ? "var(--up)" : "var(--down)";
+  const last = xy[xy.length - 1];
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="Precio último año">
+    <polygon points="2,${H} ${line} ${W - 2},${H}" fill="${col}" opacity=".12"/>
+    <polyline points="${line}" fill="none" stroke="${col}" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3" fill="${col}"/></svg>`;
+}
+
+function openSheet(t) {
+  const info = S.M.tickers[t]; if (!info) return;
+  const L = liveLevels(t), ch = liveChg(t), ret = periodReturns(t);
+  const nt = L.nt || {}, f = info.fundamentales || {}, e = info.earnings || {};
+  const pos = S.C?.posiciones?.[t];
+  const P = pos ? portfolio() : null;
+  const pr = P?.rows.find((r) => r.sym === t);
+  const upside = isNum(f.precio_objetivo) && isNum(L.price) ? (f.precio_objetivo / L.price - 1) * 100 : null;
+  const tiersRows = L.tiers ? ["tactico", "estructural", "historico"].map((k) => {
+    const x = L.tiers[k] || {}, rb = x.rbLive;
+    return `<tr><td>${TIER_NAME[k]}</td><td class="r num">${x.piso ? fPrice(x.piso.precio) : "—"}</td><td class="r num">${x.techo ? fPrice(x.techo.precio) : "—"}</td>
+      <td class="r num">${fRatio(rb)}</td><td class="r">${rb ? `<span class="pill ${semClass(rb.semaforo)}">${nf(0).format(rb.posicion * 100)}%</span>` : "—"}</td></tr>`;
+  }).join("") : "";
+  const fr = nt.fuerza_relativa_multi || {};
+  const sem = S.C?.semaforo?.[t];
+
+  $("#sheet").innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(disp(t))}">
+    <div class="grab"></div>
+    <div class="sheet-head"><div><h3>${esc(disp(t))}</h3><div class="sub">${esc(info.nombre)} · ${esc(info.sector)}</div></div>
+      <button class="icon-btn x" type="button" data-close aria-label="Cerrar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <div class="stack">
+      <div class="card">
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><span class="num" style="font-size:30px;font-weight:600">${fPrice(L.price)}</span>
+          <span class="num ${cls(ch)}" style="font-weight:600">${fPct(ch, 2)}</span>
+          ${S.Q[t]?.session && S.Q[t].session !== "regular" ? `<span class="pill neutro">${esc({ pre: "pre-mercado", post: "post-mercado", closed: "cerrado" }[S.Q[t].session] || "")}</span>` : ""}</div>
+        ${sparkSvg(info.spark, L.price)}
+        <div class="metrics" style="margin-top:6px">${[["1 sem", ret["1w"]], ["1 mes", ret["1m"]], ["3 meses", ret["3m"]], ["1 año", ret["1y"]]].map(([k, v]) => `<div class="metric"><div class="k">${k}</div><div class="v num ${cls(v)}">${fPct(v, 1)}</div></div>`).join("")}</div>
+      </div>
+      ${L.alerta ? `<div class="banner">${esc(disp(t))} ${esc(L.alerta)}.</div>` : ""}
+      ${pr ? `<div class="card"><strong>Tu posición</strong>${sem ? ` <span class="pill ${semClass(sem.estado)}">Pilar 4 ${esc(sem.estado)}</span>` : ""}
+        <div class="metrics" style="margin-top:8px">
+          <div class="metric"><div class="k">Cantidad</div><div class="v num"><span class="amt">${nf(pr.qty % 1 ? 2 : 0).format(pr.qty)}</span></div></div>
+          <div class="metric"><div class="k">Costo promedio</div><div class="v num">${fPrice(pr.avg)}</div></div>
+          <div class="metric"><div class="k">Valor · peso</div><div class="v num">${fUsd(pr.value)} <span class="sub">${fPct(pr.peso, 1, false)}</span></div></div>
+          <div class="metric"><div class="k">No realizado</div><div class="v num ${cls(pr.un)}">${fUsd(pr.un, { sign: true })} <span class="sub">${fPct(pr.unPct, 1)}</span></div></div>
+        </div>${sem?.razones?.length ? `<div class="sub" style="margin-top:6px">${esc(sem.razones.join(" · "))}</div>` : ""}</div>` : ""}
+      ${L.tiers ? `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><strong>Niveles por volumen</strong>
+          ${nt.veredicto ? `<span class="pill ${verClass(nt.veredicto)}">${esc(nt.veredicto)}</span>` : ""}</div>
+        <div class="tbl-wrap" style="margin-top:6px"><table><thead><tr><th>Horizonte</th><th class="r">Piso</th><th class="r">Techo</th><th class="r">R:B</th><th class="r">Rango</th></tr></thead><tbody>${tiersRows}</tbody></table></div>
+        <div class="metrics" style="margin-top:10px">
+          <div class="metric"><div class="k">Defensa táctica</div><div class="v num ${isNum(nt.defensa_tactica) && L.price < nt.defensa_tactica ? "down" : ""}">${fPrice(nt.defensa_tactica)}</div></div>
+          <div class="metric"><div class="k">Defensa estructural</div><div class="v num ${isNum(nt.defensa_estructural) && L.price < nt.defensa_estructural ? "down" : ""}">${fPrice(nt.defensa_estructural)}</div></div>
+          <div class="metric"><div class="k">Volatilidad anual</div><div class="v num">${fPct(nt.vol_anual_pct, 0, false)}</div></div>
+          <div class="metric"><div class="k">Revisión sugerida</div><div class="v">${esc(nt.frecuencia_revision || "—")}</div></div>
+        </div>
+        ${(nt.escalas_entrada || []).length ? `<div class="sub" style="margin-top:10px"><strong>Entrada por tramos:</strong> ${nt.escalas_entrada.map((x) => `${fPrice(x.precio)} (${x.pct_tramo}%)`).join(" · ")}</div>` : ""}
+        ${(nt.escalas_salida || []).length ? `<div class="sub" style="margin-top:4px"><strong>Salida por tramos:</strong> ${nt.escalas_salida.map((x) => `${fPrice(x.precio)} (${x.pct_tramo}%)`).join(" · ")}</div>` : `<div class="sub" style="margin-top:4px">Sin techo en ningún horizonte (precio en descubrimiento): usar trailing stop.</div>`}
+      </div>` : `<div class="card sub">Sin niveles técnicos para este ticker${nt.error ? ` (${esc(nt.error)})` : ""}.</div>`}
+      ${Object.keys(f).length ? `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><strong>Valuación y analistas</strong>
+          ${f.calidad?.label ? `<span class="pill ${f.calidad.label === "Alta" ? "verde" : f.calidad.label === "Baja" ? "rojo" : "amarillo"}">Calidad ${esc(f.calidad.label)}</span>` : ""}</div>
+        <div class="metrics" style="margin-top:8px">
+          <div class="metric"><div class="k">P/E</div><div class="v num">${f.per_negativo_o_sin_dato ? "n/a" : nf(1).format(f.per)}</div></div>
+          <div class="metric"><div class="k">P/E futuro</div><div class="v num">${isNum(f.forward_pe) ? nf(1).format(f.forward_pe) : "—"}</div></div>
+          <div class="metric"><div class="k">PEG</div><div class="v num">${isNum(f.peg) ? nf(2).format(f.peg) : "—"}</div></div>
+          <div class="metric"><div class="k">ROE</div><div class="v num">${fPct(f.roe_pct, 0, false)}</div></div>
+          <div class="metric"><div class="k">Margen operativo</div><div class="v num">${fPct(f.margen_operativo_pct, 0, false)}</div></div>
+          <div class="metric"><div class="k">Ingresos a/a</div><div class="v num ${cls(f.crec_ingresos_yoy_pct)}">${fPct(f.crec_ingresos_yoy_pct, 0)}</div></div>
+          <div class="metric"><div class="k">Consenso</div><div class="v">${esc(f.consenso || "—")} <span class="sub">${f.total_analistas ? f.total_analistas + " anal." : ""}</span></div></div>
+          <div class="metric"><div class="k">Precio objetivo</div><div class="v num">${fPrice(f.precio_objetivo)} <span class="sub ${cls(upside)}">${fPct(upside, 0)}</span></div></div>
+        </div>${f.dato_stale ? `<div class="sub" style="margin-top:6px">Dato de hace ${f.dato_edad_dias} días.</div>` : ""}</div>` : ""}
+      ${e.fecha || info.siguiente_call ? `<div class="card"><strong>Earnings</strong><div class="metrics" style="margin-top:8px">
+          <div class="metric"><div class="k">Próximo</div><div class="v">${fDate(e.fecha || (S.M.proximos_eventos || []).find((x) => x.ticker === t)?.fecha, true)}</div></div>
+          <div class="metric"><div class="k">EPS estimado</div><div class="v num">${isNum(e.eps_estimado) ? nf(2).format(e.eps_estimado) : "—"}</div></div>
+          <div class="metric"><div class="k">Revisiones 30d</div><div class="v">${esc(e.tendencia_revisiones || "—")}</div></div>
+          <div class="metric"><div class="k">Siguiente call</div><div class="v">${fDate(info.siguiente_call, true)}</div></div></div></div>` : ""}
+      ${Object.values(fr).some(Boolean) ? `<div class="card"><strong>Fuerza relativa</strong><ul class="list" style="margin-top:8px">${["SPY", "QQQ", "BTC"].filter((k) => fr[k]).map((k) => `<li><span class="ic num" style="font-size:11px">${k}</span><span>${esc(fr[k].texto)}</span></li>`).join("")}</ul></div>` : ""}
+      ${info.noticia?.titulo ? `<div class="card"><strong>Última noticia</strong><div style="margin-top:6px">${info.noticia.url ? `<a href="${esc(info.noticia.url)}" target="_blank" rel="noopener">${esc(info.noticia.titulo)}</a>` : esc(info.noticia.titulo)}</div></div>` : ""}
+    </div></div>`;
+  $("#sheet").hidden = false;
+  document.body.style.overflow = "hidden";
+}
+function closeSheet() { $("#sheet").hidden = true; $("#sheet").innerHTML = ""; document.body.style.overflow = ""; }
+
+// ── Datos y sesión ────────────────────────────────────────────────────────
+async function loadSnapshot() {
+  const { data, error } = await sb.from("inv_snapshot").select("clave,data,generado");
+  if (error) throw error;
+  for (const r of data || []) { if (r.clave === "mercado") S.M = r.data; if (r.clave === "cuenta") S.C = r.data; }
+  try { localStorage.setItem("mb_cache", JSON.stringify({ M: S.M, C: S.C })); } catch (_) {}
+}
+
+let started = false;
+async function start() {
+  if (started) return; started = true;
+  $("#login").hidden = true; $("#app").hidden = false;
+  // Pinta al instante lo último guardado en este teléfono y luego actualiza.
+  try { const c = JSON.parse(localStorage.getItem("mb_cache") || "null"); if (c?.M) { S.M = c.M; S.C = c.C; render(); } } catch (_) {}
+  try { await loadSnapshot(); }
+  catch (e) { console.warn(e); if (!S.M) { $("#v-resumen").innerHTML = `<div class="card empty">No se pudo leer el cálculo diario. Revisa tu conexión e intenta de nuevo.</div>`; return; } }
+  if (!S.M) { $("#v-resumen").innerHTML = `<div class="card empty">Todavía no hay cálculo diario guardado. Aparece después de la primera corrida del proceso en GitHub.</div>`; setStatus(); return; }
+  render();
+  loadQuotes();
+}
+
+function showLogin(msg, err) {
+  $("#app").hidden = true; $("#login").hidden = false;
+  const m = $("#login-msg"); m.hidden = !msg; m.textContent = msg || ""; m.className = "msg" + (err ? " err" : "");
+}
+
+// ── Eventos ───────────────────────────────────────────────────────────────
+document.addEventListener("click", (ev) => {
+  const t = ev.target.closest("[data-t]");
+  if (t && !ev.target.closest("[data-close]")) { ev.preventDefault(); openSheet(t.dataset.t); return; }
+  if (ev.target.closest("[data-close]") || ev.target.id === "sheet") { closeSheet(); return; }
+  const tab = ev.target.closest(".tab");
+  if (tab) { S.view = tab.dataset.v; try { localStorage.setItem("mb_view", S.view); } catch (_) {} render(); window.scrollTo({ top: 0 }); return; }
+  const chip = ev.target.closest("[data-sector]");
+  if (chip) { S.sector = chip.dataset.sector; renderWatch(); return; }
+  const so = ev.target.closest("[data-sort]");
+  if (so) { S.sort = so.dataset.sort; renderWatch(); return; }
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !$("#sheet").hidden) closeSheet();
+  if ((ev.key === "Enter" || ev.key === " ") && ev.target.matches(".r[data-t]")) { ev.preventDefault(); openSheet(ev.target.dataset.t); }
+});
+$("#refresh-btn").addEventListener("click", () => loadQuotes());
+$("#mask-btn").addEventListener("click", () => {
+  S.masked = !S.masked; try { localStorage.setItem("mb_masked", S.masked ? "1" : "0"); } catch (_) {}
+  $("#mask-btn").setAttribute("aria-label", S.masked ? "Mostrar montos" : "Ocultar montos"); render();
+});
+// Cada vez que vuelves a la app (estaba en segundo plano) trae precios nuevos.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && S.M && (!S.qAt || Date.now() - S.qAt > 30000)) loadQuotes();
+});
+
+$("#login-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const email = $("#email").value.trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) { showLogin("Escribe un correo válido.", true); return; }
+  $("#send-btn").disabled = true;
+  const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+  $("#send-btn").disabled = false;
+  if (error) { showLogin("No se pudo enviar el acceso: " + error.message, true); return; }
+  $("#otp-box").hidden = false;
+  showLogin("Te enviamos un correo. Abre el enlace desde este teléfono o escribe aquí el código.");
+});
+$("#otp-btn").addEventListener("click", async () => {
+  const email = $("#email").value.trim().toLowerCase(), token = $("#otp").value.trim();
+  if (!token) return;
+  const { error } = await sb.auth.verifyOtp({ email, token, type: "email" });
+  if (error) showLogin("Código no válido o vencido. Pide uno nuevo.", true);
+});
+
+sb.auth.onAuthStateChange((evt, session) => {
+  if (evt === "SIGNED_IN" && session) { if (location.hash.includes("access_token")) history.replaceState(null, "", location.pathname); start(); }
+  if (evt === "SIGNED_OUT") { started = false; try { localStorage.removeItem("mb_cache"); } catch (_) {} showLogin(); }
+});
+(async () => {
+  const { data } = await sb.auth.getSession();
+  if (data?.session) start(); else showLogin();
+})();
+
+if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+})();
