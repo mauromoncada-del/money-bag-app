@@ -121,6 +121,14 @@ h2{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
 .row .px{text-align:right;font-size:15px;font-weight:500}
 .row .ch{text-align:right;font-size:12.5px}
 .row .bar{grid-column:1/-1;display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;font-size:11px;color:var(--muted);margin-top:4px}
+.bars3{grid-column:1/-1;display:grid;grid-template-columns:18px auto 1fr auto;column-gap:8px;row-gap:3px;align-items:center;font-size:10.5px;color:var(--muted);margin-top:6px}
+.bars3 .tl{font-weight:700;font-size:10px;letter-spacing:.02em}
+.bars3 .num{text-align:right}
+.bars3 .num:last-child,.bars3 .range + .num{text-align:left}
+.bars3 .range{height:5px}
+.bars3 .range .mk{width:10px;height:10px}
+.range.off{opacity:.35}
+.range .mk.out{background:var(--surface);border:2px solid var(--ink)}
 .own{width:6px;height:6px;border-radius:50%;background:var(--brass);flex:none}
 .alert-tag{font-size:11px;font-weight:600;color:var(--warn)}
 

@@ -262,6 +262,25 @@ function render() {
   document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.v === S.view)));
 }
 
+// Tres rangos piso–techo apilados (táctico 6m, estructural 2a, histórico 5a),
+// cada uno en su propia escala, con un punto donde está el precio de ahora.
+// Si el precio rompió el piso o el techo, el punto queda en el borde y hueco.
+function tierBars(l) {
+  if (!l.tiers) return "";
+  const filas = [["tactico", "6m"], ["estructural", "2a"], ["historico", "5a"]].map(([k, lbl]) => {
+    const x = l.tiers[k] || {}, p = x.piso?.precio, t = x.techo?.precio, px = l.price;
+    let mk = "";
+    if (isNum(p) && isNum(t) && t > p && isNum(px)) {
+      const raw = (px - p) / (t - p), fuera = raw < 0 || raw > 1;
+      mk = `<span class="mk${fuera ? " out" : ""}" style="left:${(Math.max(0, Math.min(1, raw)) * 100).toFixed(1)}%"></span>`;
+    } else if (isNum(p) && !isNum(t)) {
+      mk = `<span class="mk out" style="left:100%"></span>`;   // sin techo: precio en descubrimiento
+    }
+    return `<span class="tl">${lbl}</span><span class="num">${isNum(p) ? fPrice(p) : "—"}</span><div class="range${isNum(p) || isNum(t) ? "" : " off"}">${mk}</div><span class="num">${isNum(t) ? fPrice(t) : "—"}</span>`;
+  }).join("");
+  return `<div class="bars3">${filas}</div>`;
+}
+
 function rangeBar(rb) {
   if (!rb) return `<div class="range" style="opacity:.35"></div>`;
   return `<div class="range" title="Posición en el rango piso–techo"><span class="mk" style="left:${(rb.posicion * 100).toFixed(1)}%"></span></div>`;
@@ -343,7 +362,7 @@ function renderWatch() {
         ${l.nt?.veredicto ? `<span class="pill ${verClass(l.nt.veredicto)}">${esc(l.nt.veredicto)}</span>` : ""}</div>
         <div class="nm">${esc(info.nombre)}</div></div>
       <div><div class="px num">${fPrice(l.price)}</div><div class="ch num ${cls(ch)}">${fPct(ch, 2)}</div></div>
-      <div class="bar"><span class="num">${l.tiers?.tactico?.piso ? fPrice(l.tiers.tactico.piso.precio) : "piso —"}</span>${rangeBar(l.tiers?.tactico?.rbLive || l.rb)}<span class="num">${l.tiers?.tactico?.techo ? fPrice(l.tiers.tactico.techo.precio) : "techo —"}</span></div>
+      ${tierBars(l)}
       ${l.alerta ? `<div class="alert-tag" style="grid-column:1/-1">${esc(l.alerta)}</div>` : ""}
     </button>`;
   }).join("");
@@ -352,7 +371,7 @@ function renderWatch() {
     <div class="toolbar" role="group" aria-label="Filtrar">${sectores.map((s) => `<button class="chip" data-sector="${esc(s)}" aria-pressed="${S.sector === s}">${esc(s)}</button>`).join("")}</div>
     <div class="toolbar" role="group" aria-label="Ordenar">${[["sector", "Por sector"], ["dia", "Mayor % hoy"], ["rango", "Más cerca del piso"]].map(([k, l]) => `<button class="chip" data-sort="${k}" aria-pressed="${S.sort === k}">${l}</button>`).join("")}</div>
     <div class="card flush">${rows || `<div class="empty">Sin tickers en este filtro.</div>`}</div>
-    <div class="foot">Barra: posición del precio entre el piso y el techo táctico (6 meses).</div>`;
+    <div class="foot">Barras: piso y techo por volumen a 6 meses, 2 años y 5 años; el punto es el precio de ahora. Punto hueco: el precio rompió ese rango.</div>`;
 }
 
 function hbar(lbl, pct, tope, over) {
