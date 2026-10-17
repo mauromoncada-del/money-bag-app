@@ -18,8 +18,8 @@ const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
 
-const S = { M: null, C: null, Q: {}, qAt: null, loadingQ: false, view: "resumen", sector: "Todos", sort: "sector", masked: false };
-try { S.masked = localStorage.getItem("mb_masked") === "1"; S.view = localStorage.getItem("mb_view") || "resumen"; } catch (_) {}
+const S = { M: null, C: null, Q: {}, E: {}, qAt: null, loadingQ: false, view: "resumen", sector: "Todos", sort: "sector", wmode: "lista", masked: false };
+try { S.masked = localStorage.getItem("mb_masked") === "1"; S.view = localStorage.getItem("mb_view") || "resumen"; S.wmode = localStorage.getItem("mb_wmode") || "lista"; } catch (_) {}
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -286,6 +286,14 @@ function rangeBar(rb) {
   return `<div class="range" title="Posición en el rango piso–techo"><span class="mk" style="left:${(rb.posicion * 100).toFixed(1)}%"></span></div>`;
 }
 
+// Equivalente en pesos con el USD/COP en vivo (Yahoo "COP=X").
+function copLine(usd) {
+  const q = S.Q["COP=X"], fx = q?.price;
+  if (!isNum(fx) || !isNum(usd)) return "";
+  const cop = usd * fx, txt = Math.abs(cop) >= 1e9 ? `${nf(2).format(cop / 1e9)} mil millones` : `${nf(1).format(cop / 1e6)} millones`;
+  return `<div class="sub num" style="margin-top:2px"><span class="amt">≈ $${txt} COP</span> · dólar $${nf(0).format(fx)} <span class="${cls(q.chgPct)}">${fPct(q.chgPct, 2)}</span></div>`;
+}
+
 function renderResumen() {
   const el = $("#v-resumen");
   const P = portfolio();
@@ -293,7 +301,7 @@ function renderResumen() {
 
   if (P) {
     parts.push(`<div class="card hero">
-      <div><div class="label">Valor de la cartera</div><div class="big num">${fUsd(P.nav)}</div></div>
+      <div><div class="label">Valor de la cartera</div><div class="big num">${fUsd(P.nav)}</div>${copLine(P.nav)}</div>
       <div class="grid3">
         <div class="kv"><div class="k">Hoy</div><div class="v num ${cls(P.day)}">${fUsd(P.day, { sign: true })}<div class="sub num ${cls(P.dayPct)}">${fPct(P.dayPct, 2)}</div></div></div>
         <div class="kv"><div class="k">No realizado</div><div class="v num ${cls(P.unreal)}">${fUsd(P.unreal, { sign: true })}<div class="sub num ${cls(P.unrealPct)}">${fPct(P.unrealPct, 1)}</div></div></div>
@@ -367,11 +375,28 @@ function renderWatch() {
     </button>`;
   }).join("");
 
+  const heat = (ch) => {
+    if (!isNum(ch)) return "background:var(--sunk)";
+    const k = Math.round(10 + Math.min(Math.abs(ch) / 6, 1) * 62);
+    return `background:color-mix(in srgb, ${ch >= 0 ? "var(--up)" : "var(--down)"} ${k}%, var(--surface))${k > 42 ? ";color:#fff" : ""}`;
+  };
+  const tiles = list.map((t) => {
+    const ch = liveChg(t), l = L[t];
+    return `<button class="tile" data-t="${esc(t)}" type="button" style="${heat(ch)}" aria-label="${esc(disp(t))} ${fPct(ch, 2)}">
+      <span class="tt">${esc(disp(t))}${own.has(t) ? '<span class="own"></span>' : ""}</span>
+      <span class="num tp">${fPrice(l.price)}</span><span class="num tc">${fPct(ch, 2)}</span></button>`;
+  }).join("");
+  const sube = list.filter((t) => liveChg(t) > 0).length, baja = list.filter((t) => liveChg(t) < 0).length;
+
   el.innerHTML = `
+    <div class="toolbar" role="group" aria-label="Vista">${[["lista", "Lista"], ["mapa", "Mapa de calor"]].map(([k, l]) => `<button class="chip" data-wmode="${k}" aria-pressed="${S.wmode === k}">${l}</button>`).join("")}</div>
     <div class="toolbar" role="group" aria-label="Filtrar">${sectores.map((s) => `<button class="chip" data-sector="${esc(s)}" aria-pressed="${S.sector === s}">${esc(s)}</button>`).join("")}</div>
     <div class="toolbar" role="group" aria-label="Ordenar">${[["sector", "Por sector"], ["dia", "Mayor % hoy"], ["rango", "Más cerca del piso"]].map(([k, l]) => `<button class="chip" data-sort="${k}" aria-pressed="${S.sort === k}">${l}</button>`).join("")}</div>
-    <div class="card flush">${rows || `<div class="empty">Sin tickers en este filtro.</div>`}</div>
-    <div class="foot">Barras: piso y techo por volumen a 6 meses, 2 años y 5 años; el punto es el precio de ahora. Punto hueco: el precio rompió ese rango.</div>`;
+    ${S.wmode === "mapa"
+      ? `${list.length ? `<div class="sub" style="margin:0 2px"><span class="up">▲ ${sube} suben</span> · <span class="down">▼ ${baja} bajan</span> hoy</div><div class="heat">${tiles}</div>` : `<div class="card empty">Sin tickers en este filtro.</div>`}
+         <div class="foot">Color por el % del día: más intenso, mayor movimiento (tope ±6%). Punto dorado: en tu cartera. Toca un cuadro para ver la ficha.</div>`
+      : `<div class="card flush">${rows || `<div class="empty">Sin tickers en este filtro.</div>`}</div>
+    <div class="foot">Barras: piso y techo por volumen a 6 meses, 2 años y 5 años; el punto es el precio de ahora. Punto hueco: el precio rompió ese rango.</div>`}`;
 }
 
 function hbar(lbl, pct, tope, over) {
@@ -445,11 +470,11 @@ function renderCartera() {
 function renderMacro() {
   const el = $("#v-macro");
   const m = S.M.macro || {};
-  const live = [["SPY", "S&P 500 (SPY)"], ["QQQ", "Nasdaq 100 (QQQ)"], ["^VIX", "VIX"], ["^TNX", "Bono 10 años"], ["DX-Y.NYB", "Índice dólar"], ["BTC-USD", "Bitcoin"]];
+  const live = [["SPY", "S&P 500 (SPY)"], ["QQQ", "Nasdaq 100 (QQQ)"], ["^VIX", "VIX"], ["^TNX", "Bono 10 años"], ["DX-Y.NYB", "Índice dólar"], ["COP=X", "Dólar (USD/COP)"], ["BTC-USD", "Bitcoin"]];
   const tiles = live.map(([s, n]) => {
     const q = S.Q[s];
     const v = q?.price; const ch = q?.chgPct;
-    const val = s === "^TNX" ? (isNum(v) ? nf(2).format(v) + "%" : "—") : s === "^VIX" || s === "DX-Y.NYB" ? (isNum(v) ? nf(2).format(v) : "—") : fPrice(v);
+    const val = s === "^TNX" ? (isNum(v) ? nf(2).format(v) + "%" : "—") : s === "^VIX" || s === "DX-Y.NYB" ? (isNum(v) ? nf(2).format(v) : "—") : s === "COP=X" ? (isNum(v) ? "$" + nf(0).format(v) : "—") : fPrice(v);
     return `<div class="metric"><div class="k">${n}</div><div class="v num">${val}</div><div class="sub num ${s === "^VIX" || s === "^TNX" ? cls(-ch) : cls(ch)}">${fPct(ch, 2)}</div></div>`;
   }).join("");
   const reg = m.regimen;
@@ -554,12 +579,107 @@ function openSheet(t) {
           <div class="metric"><div class="k">EPS estimado</div><div class="v num">${isNum(e.eps_estimado) ? nf(2).format(e.eps_estimado) : "—"}</div></div>
           <div class="metric"><div class="k">Revisiones 30d</div><div class="v">${esc(e.tendencia_revisiones || "—")}</div></div>
           <div class="metric"><div class="k">Siguiente call</div><div class="v">${fDate(info.siguiente_call, true)}</div></div></div></div>` : ""}
+      <div id="eps-slot" data-eps="${esc(t)}"><div class="card sub">Cargando EPS…</div></div>
       ${Object.values(fr).some(Boolean) ? `<div class="card"><strong>Fuerza relativa</strong><ul class="list" style="margin-top:8px">${["SPY", "QQQ", "BTC"].filter((k) => fr[k]).map((k) => `<li><span class="ic num" style="font-size:11px">${k}</span><span>${esc(fr[k].texto)}</span></li>`).join("")}</ul></div>` : ""}
       ${info.noticia?.titulo ? `<div class="card"><strong>Última noticia</strong><div style="margin-top:6px">${info.noticia.url ? `<a href="${esc(info.noticia.url)}" target="_blank" rel="noopener">${esc(info.noticia.titulo)}</a>` : esc(info.noticia.titulo)}</div></div>` : ""}
     </div></div>`;
   $("#sheet").hidden = false;
   document.body.style.overflow = "hidden";
+  loadEps(t);
 }
+// ── EPS trimestral (tabla inv_eps, la llena eps_sync.py) ──────────────────
+const MES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const qLbl = (iso) => { const [y, m] = String(iso).split("-"); return `${MES[+m - 1]} ${y.slice(2)}`; };
+const fEps = (v) => (isNum(v) ? (Math.abs(v) < 1 ? nf(3) : nf(2)).format(v) : "—");
+
+function epsChart(hist, proyT) {
+  const real = hist.slice().reverse();                 // viejo → nuevo
+  const items = [...real.map((r) => ({ fin: r[0], v: r[2], est: r[3], p: false })),
+                 ...proyT.map((x) => ({ fin: x.fin, v: x.eps, est: null, p: true, lo: x.bajo, hi: x.alto }))];
+  if (items.length < 2) return "";
+  const W = 320, H = 132, padB = 16, padT = 14;
+  const vals = items.flatMap((i) => [i.v, i.est, i.hi, i.lo]).filter(isNum);
+  const mx = Math.max(0, ...vals), mn = Math.min(0, ...vals), rg = mx - mn || 1;
+  const y = (v) => padT + (mx - v) / rg * (H - padB - padT);
+  const bw = (W - 4) / items.length, gap = Math.max(1, bw * 0.22);
+  const y0 = y(0);
+  let out = `<line x1="0" x2="${W}" y1="${y0.toFixed(1)}" y2="${y0.toFixed(1)}" stroke="var(--line)"/>`;
+  let lastYear = "";
+  items.forEach((it, i) => {
+    const x = 2 + i * bw + gap / 2, w = bw - gap, top = y(Math.max(it.v, 0)), bot = y(Math.min(it.v, 0));
+    const h = Math.max(1, bot - top);
+    const beat = isNum(it.est) ? it.v >= it.est : null;
+    const fill = it.p ? "none" : it.v < 0 ? "var(--down)" : "var(--brass)";
+    out += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="${fill}"
+      ${it.p ? `stroke="var(--brass)" stroke-dasharray="3 2" stroke-width="1.2"` : `opacity="${beat === false ? 0.55 : 1}"`}>
+      <title>${qLbl(it.fin)} · ${it.p ? "proyectado" : "real"} ${fEps(it.v)}${isNum(it.est) ? ` · estimado ${fEps(it.est)}` : ""}</title></rect>`;
+    if (isNum(it.est)) out += `<line x1="${(x - 1).toFixed(1)}" x2="${(x + w + 1).toFixed(1)}" y1="${y(it.est).toFixed(1)}" y2="${y(it.est).toFixed(1)}" stroke="var(--ink)" stroke-width="1.4" opacity=".7"/>`;
+    const yr = it.fin.slice(0, 4);
+    if (yr !== lastYear && x < W - 26) { lastYear = yr; out += `<text x="${x.toFixed(1)}" y="${H - 3}" font-size="9" fill="var(--muted)" font-family="var(--f-num)">${yr}</text>`; }
+  });
+  const last = items.length - 1, it = items[last], lx = 2 + last * bw + bw - gap / 2;
+  const ly = it.v >= 0 ? y(Math.max(it.v, it.hi ?? it.v)) - 3 : Math.min(H - padB - 2, y(Math.min(it.v, it.lo ?? it.v)) + 10);
+  out += `<text x="${Math.min(W - 1, lx).toFixed(1)}" y="${Math.max(9, ly).toFixed(1)}" font-size="9.5" text-anchor="end" fill="var(--ink)" font-family="var(--f-num)">${fEps(it.v)}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;margin-top:8px" role="img" aria-label="EPS por trimestre desde 2020: barras llenas real, punteadas proyectado, raya estimado">${out}</svg>
+    <div class="sub" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
+      <span><span style="display:inline-block;width:9px;height:9px;background:var(--brass);border-radius:2px"></span> Real</span>
+      <span><span style="display:inline-block;width:9px;height:9px;border:1.2px dashed var(--brass);border-radius:2px"></span> Proyectado</span>
+      <span><span style="display:inline-block;width:12px;height:2px;background:var(--ink);opacity:.7;vertical-align:middle"></span> Estimado</span>
+      <span>Atenuada = no superó el estimado</span></div>`;
+}
+
+function epsCardHtml(t, row) {
+  if (!row) return `<div class="card"><strong>EPS por trimestre</strong><div class="sub" style="margin-top:6px">Todavía sin histórico de EPS para este ticker. Se carga en las próximas corridas diarias.</div></div>`;
+  const hist = row.hist || [], proy = row.proy || [];
+  if (!hist.length && !proy.length) return `<div class="card"><strong>EPS por trimestre</strong><div class="sub" style="margin-top:6px">Alpha Vantage no tiene EPS para este ticker.</div></div>`;
+  const proyT = proy.filter((x) => x.periodo === "T"), proyA = proy.filter((x) => x.periodo === "A");
+  const ttm = hist.length >= 4 ? hist.slice(0, 4).reduce((a, r) => a + r[2], 0) : null;
+  const yoy = hist.length >= 5 && hist[4][2] > 0 ? (hist[0][2] / hist[4][2] - 1) * 100 : null;
+  const ult8 = hist.slice(0, 8).filter((r) => isNum(r[3]));
+  const beats = ult8.filter((r) => r[2] >= r[3]).length;
+  const price = livePrice(t);
+  const fy = proyA[0];
+  const peF = fy && isNum(price) && fy.eps > 0 ? price / fy.eps : null;
+  const peT = isNum(ttm) && ttm > 0 && isNum(price) ? price / ttm : null;
+  const rev = (x) => { if (!isNum(x.prev30) || !x.prev30) return ""; const d = (x.eps - x.prev30) / Math.abs(x.prev30) * 100;
+    return `<span class="sub ${cls(d)}">${Math.abs(d) < 0.05 ? "sin cambio" : fPct(d, 1)} 30d</span>`; };
+  const s0 = hist[0];
+  const sorpresa = s0 && isNum(s0[3]) && s0[3] !== 0 ? (s0[2] / s0[3] - 1) * 100 * Math.sign(s0[3]) : null;
+  const filas = hist.map((r) => { const sp = isNum(r[3]) && r[3] !== 0 ? (r[2] / r[3] - 1) * 100 * Math.sign(r[3]) : null;
+    return `<tr><td>${qLbl(r[0])}</td><td class="r num">${fEps(r[2])}</td><td class="r num">${fEps(r[3])}</td><td class="r num ${cls(sp)}">${fPct(sp, 1)}</td></tr>`; }).join("");
+  return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><strong>EPS por trimestre</strong>
+      ${ult8.length ? `<span class="pill ${beats / ult8.length >= 0.75 ? "verde" : beats / ult8.length >= 0.5 ? "amarillo" : "rojo"}">Superó ${beats} de ${ult8.length}</span>` : ""}</div>
+    ${epsChart(hist, proyT)}
+    <div class="metrics" style="margin-top:10px">
+      <div class="metric"><div class="k">Último trimestre${s0 ? ` · ${qLbl(s0[0])}` : ""}</div><div class="v num">${fEps(s0?.[2])} <span class="sub ${cls(sorpresa)}">${isNum(sorpresa) ? fPct(sorpresa, 1) + " vs est." : ""}</span></div></div>
+      <div class="metric"><div class="k">Crecimiento a/a</div><div class="v num ${cls(yoy)}">${fPct(yoy, 0)}</div></div>
+      <div class="metric"><div class="k">EPS últimos 12m</div><div class="v num">${fEps(ttm)} <span class="sub">${isNum(peT) ? "P/E " + nf(1).format(peT) : ""}</span></div></div>
+      <div class="metric"><div class="k">P/E proyectado${fy ? ` · año fiscal ${fy.fin.slice(0, 4)}` : ""}</div><div class="v num">${isNum(peF) ? nf(1).format(peF) : "—"}</div></div>
+    </div>
+    ${proy.length ? `<div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Proyección</th><th class="r">EPS</th><th class="r">Rango</th><th class="r">Revisión</th></tr></thead><tbody>
+      ${[...proyT, ...proyA].map((x) => `<tr><td>${x.periodo === "A" ? "Año fiscal" : "Trim."} ${qLbl(x.fin)}<div class="sub">${x.n} analistas${x.up30 || x.down30 ? ` · ↑${x.up30} ↓${x.down30}` : ""}</div></td>
+        <td class="r num">${fEps(x.eps)}${hist[3] && x.periodo === "T" ? `<div class="sub ${cls(x.eps - (hist.find((r) => r[0].slice(5, 7) === x.fin.slice(5, 7)) || [])[2])}">${(() => { const b = hist.find((r) => r[0].slice(5, 7) === x.fin.slice(5, 7) && r[0] < x.fin); return b && b[2] > 0 ? fPct((x.eps / b[2] - 1) * 100, 0) + " a/a" : ""; })()}</div>` : ""}</td>
+        <td class="r num sub">${isNum(x.bajo) && isNum(x.alto) ? `${fEps(x.bajo)} a ${fEps(x.alto)}` : "—"}</td><td class="r">${rev(x)}</td></tr>`).join("")}
+    </tbody></table></div>` : ""}
+    ${hist.length ? `<details style="margin-top:10px"><summary class="sub" style="cursor:pointer">Ver los ${hist.length} trimestres desde 2020</summary>
+      <div class="tbl-wrap" style="margin-top:6px"><table><thead><tr><th>Trimestre</th><th class="r">Real</th><th class="r">Estimado</th><th class="r">Sorpresa</th></tr></thead><tbody>${filas}</tbody></table></div></details>` : ""}
+    <div class="sub" style="margin-top:8px">EPS ajustado (el que compara el consenso), por fin de trimestre fiscal. Fuente: Alpha Vantage.</div>
+  </div>`;
+}
+
+async function loadEps(t) {
+  const slot = document.getElementById("eps-slot"); if (!slot) return;
+  if (!(t in S.E)) {
+    try {
+      const { data, error } = await sb.from("inv_eps").select("hist,proy,actualizado").eq("ticker", t).maybeSingle();
+      if (error) throw error;
+      S.E[t] = data || null;
+    } catch (e) { console.warn(e); slot.innerHTML = `<div class="card sub">No se pudo leer el EPS.</div>`; return; }
+  }
+  const cur = document.getElementById("eps-slot");
+  if (cur && cur.dataset.eps === t) cur.innerHTML = epsCardHtml(t, S.E[t]);
+}
+
 function closeSheet() { $("#sheet").hidden = true; $("#sheet").innerHTML = ""; document.body.style.overflow = ""; }
 
 // ── Datos y sesión ────────────────────────────────────────────────────────
@@ -597,6 +717,8 @@ document.addEventListener("click", (ev) => {
   if (tab) { S.view = tab.dataset.v; try { localStorage.setItem("mb_view", S.view); } catch (_) {} render(); window.scrollTo({ top: 0 }); return; }
   const chip = ev.target.closest("[data-sector]");
   if (chip) { S.sector = chip.dataset.sector; renderWatch(); return; }
+  const wm = ev.target.closest("[data-wmode]");
+  if (wm) { S.wmode = wm.dataset.wmode; try { localStorage.setItem("mb_wmode", S.wmode); } catch (_) {} renderWatch(); return; }
   const so = ev.target.closest("[data-sort]");
   if (so) { S.sort = so.dataset.sort; renderWatch(); return; }
 });

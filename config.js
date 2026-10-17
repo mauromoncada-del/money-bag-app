@@ -4,5 +4,5 @@
 window.MB_CONFIG = {
   supabaseUrl: "https://lvxscqkyomtxvdnwqbnb.supabase.co",
   supabaseKey: "sb_publishable_HGcZfwHkBlL7zdDaBFIHSQ_Jhl9G6T6",
-  macroSymbols: ["SPY", "QQQ", "^VIX", "^TNX", "DX-Y.NYB", "BTC-USD"],
+  macroSymbols: ["SPY", "QQQ", "^VIX", "^TNX", "DX-Y.NYB", "COP=X", "BTC-USD"],
 };
