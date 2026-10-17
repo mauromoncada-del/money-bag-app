@@ -18,8 +18,8 @@ const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
 
-const S = { M: null, C: null, Q: {}, qAt: null, loadingQ: false, view: "resumen", sector: "Todos", sort: "sector", masked: false };
-try { S.masked = localStorage.getItem("mb_masked") === "1"; S.view = localStorage.getItem("mb_view") || "resumen"; } catch (_) {}
+const S = { M: null, C: null, Q: {}, E: {}, qAt: null, loadingQ: false, view: "resumen", sector: "Todos", sort: "sector", wmode: "lista", masked: false };
+try { S.masked = localStorage.getItem("mb_masked") === "1"; S.view = localStorage.getItem("mb_view") || "resumen"; S.wmode = localStorage.getItem("mb_wmode") || "lista"; } catch (_) {}
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -286,6 +286,14 @@ function rangeBar(rb) {
   return `<div class="range" title="Posición en el rango piso–techo"><span class="mk" style="left:${(rb.posicion * 100).toFixed(1)}%"></span></div>`;
 }
 
+// Equivalente en pesos con el USD/COP en vivo (Yahoo "COP=X").
+function copLine(usd) {
+  const q = S.Q["COP=X"], fx = q?.price;
+  if (!isNum(fx) || !isNum(usd)) return "";
+  const cop = usd * fx, txt = Math.abs(cop) >= 1e9 ? `${nf(2).format(cop / 1e9)} mil millones` : `${nf(1).format(cop / 1e6)} millones`;
+  return `<div class="sub num" style="margin-top:2px"><span class="amt">≈ $${txt} COP</span> · dólar $${nf(0).format(fx)} <span class="${cls(q.chgPct)}">${fPct(q.chgPct, 2)}</span></div>`;
+}
+
 function renderResumen() {
   const el = $("#v-resumen");
   const P = portfolio();
@@ -293,7 +301,7 @@ function renderResumen() {
 
   if (P) {
     parts.push(`<div class="card hero">
-      <div><div class="label">Valor de la cartera</div><div class="big num">${fUsd(P.nav)}</div></div>
+      <div><div class="label">Valor de la cartera</div><div class="big num">${fUsd(P.nav)}</div>${copLine(P.nav)}</div>
       <div class="grid3">
         <div class="kv"><div class="k">Hoy</div><div class="v num ${cls(P.day)}">${fUsd(P.day, { sign: true })}<div class="sub num ${cls(P.dayPct)}">${fPct(P.dayPct, 2)}</div></div></div>
         <div class="kv"><div class="k">No realizado</div><div class="v num ${cls(P.unreal)}">${fUsd(P.unreal, { sign: true })}<div class="sub num ${cls(P.unrealPct)}">${fPct(P.unrealPct, 1)}</div></div></div>
@@ -367,11 +375,28 @@ function renderWatch() {
     </button>`;
   }).join("");
 
+  const heat = (ch) => {
+    if (!isNum(ch)) return "background:var(--sunk)";
+    const k = Math.round(10 + Math.min(Math.abs(ch) / 6, 1) * 62);
+    return `background:color-mix(in srgb, ${ch >= 0 ? "var(--up)" : "var(--down)"} ${k}%, var(--surface))${k > 42 ? ";color:#fff" : ""}`;
+  };
+  const tiles = list.map((t) => {
+    const ch = liveChg(t), l = L[t];
+    return `<button class="tile" data-t="${esc(t)}" type="button" style="${heat(ch)}" aria-label="${esc(disp(t))} ${fPct(ch, 2)}">
+      <span class="tt">${esc(disp(t))}${own.has(t) ? '<span class="own"></span>' : ""}</span>
+      <span class="num tp">${fPrice(l.price)}</span><span class="num tc">${fPct(ch, 2)}</span></button>`;
+  }).join("");
+  const sube = list.filter((t) => liveChg(t) > 0).length, baja = list.filter((t) => liveChg(t) < 0).length;
+
   el.innerHTML = `
+    <div class="toolbar" role="group" aria-label="Vista">${[["lista", "Lista"], ["mapa", "Mapa de calor"]].map(([k, l]) => `<button class="chip" data-wmode="${k}" aria-pressed="${S.wmode === k}">${l}</button>`).join("")}</div>
     <div class="toolbar" role="group" aria-label="Filtrar">${sectores.map((s) => `<button class="chip" data-sector="${esc(s)}" aria-pressed="${S.sector === s}">${esc(s)}</button>`).join("")}</div>
     <div class="toolbar" role="group" aria-label="Ordenar">${[["sector", "Por sector"], ["dia", "Mayor % hoy"], ["rango", "Más cerca del piso"]].map(([k, l]) => `<button class="chip" data-sort="${k}" aria-pressed="${S.sort === k}">${l}</button>`).join("")}</div>
-    <div class="card flush">${rows || `<div class="empty">Sin tickers en este filtro.</div>`}</div>
-    <div class="foot">Barras: piso y techo por volumen a 6 meses, 2 años y 5 años; el punto es el precio de ahora. Punto hueco: el precio rompió ese rango.</div>`;
+    ${S.wmode === "mapa"
+      ? `${list.length ? `<div class="sub" style="margin:0 2px"><span class="up">▲ ${sube} suben</span> · <span class="down">▼ ${baja} bajan</span> hoy</div><div class="heat">${tiles}</div>` : `<div class="card empty">Sin tickers en este filtro.</div>`}
+         <div class="foot">Color por el % del día: más intenso, mayor movimiento (tope ±6%). Punto dorado: en tu cartera. Toca un cuadro para ver la ficha.</div>`
+      : `<div class="card flush">${rows || `<div class="empty">Sin tickers en este filtro.</div>`}</div>
+    <div class="foot">Barras: piso y techo por volumen a 6 meses, 2 años y 5 años; el punto es el precio de ahora. Punto hueco: el precio rompió ese rango.</div>`}`;
 }
 
 function hbar(lbl, pct, tope, over) {
@@ -445,11 +470,11 @@ function renderCartera() {
 function renderMacro() {
   const el = $("#v-macro");
   const m = S.M.macro || {};
-  const live = [["SPY", "S&P 500 (SPY)"], ["QQQ", "Nasdaq 100 (QQQ)"], ["^VIX", "VIX"], ["^TNX", "Bono 10 años"], ["DX-Y.NYB", "Índice dólar"], ["BTC-USD", "Bitcoin"]];
+  const live = [["SPY", "S&P 500 (SPY)"], ["QQQ", "Nasdaq 100 (QQQ)"], ["^VIX", "VIX"], ["^TNX", "Bono 10 años"], ["DX-Y.NYB", "Índice dólar"], ["COP=X", "Dólar (USD/COP)"], ["BTC-USD", "Bitcoin"]];
   const tiles = live.map(([s, n]) => {
     const q = S.Q[s];
     const v = q?.price; const ch = q?.chgPct;
-    const val = s === "^TNX" ? (isNum(v) ? nf(2).format(v) + "%" : "—") : s === "^VIX" || s === "DX-Y.NYB" ? (isNum(v) ? nf(2).format(v) : "—") : fPrice(v);
+    const val = s === "^TNX" ? (isNum(v) ? nf(2).format(v) + "%" : "—") : s === "^VIX" || s === "DX-Y.NYB" ? (isNum(v) ? nf(2).format(v) : "—") : s === "COP=X" ? (isNum(v) ? "$" + nf(0).format(v) : "—") : fPrice(v);
     return `<div class="metric"><div class="k">${n}</div><div class="v num">${val}</div><div class="sub num ${s === "^VIX" || s === "^TNX" ? cls(-ch) : cls(ch)}">${fPct(ch, 2)}</div></div>`;
   }).join("");
   const reg = m.regimen;
@@ -554,13 +579,318 @@ function openSheet(t) {
           <div class="metric"><div class="k">EPS estimado</div><div class="v num">${isNum(e.eps_estimado) ? nf(2).format(e.eps_estimado) : "—"}</div></div>
           <div class="metric"><div class="k">Revisiones 30d</div><div class="v">${esc(e.tendencia_revisiones || "—")}</div></div>
           <div class="metric"><div class="k">Siguiente call</div><div class="v">${fDate(info.siguiente_call, true)}</div></div></div></div>` : ""}
+      <div id="eps-slot" class="stack" data-eps="${esc(t)}"><div class="card sub">Cargando EPS…</div></div>
       ${Object.values(fr).some(Boolean) ? `<div class="card"><strong>Fuerza relativa</strong><ul class="list" style="margin-top:8px">${["SPY", "QQQ", "BTC"].filter((k) => fr[k]).map((k) => `<li><span class="ic num" style="font-size:11px">${k}</span><span>${esc(fr[k].texto)}</span></li>`).join("")}</ul></div>` : ""}
       ${info.noticia?.titulo ? `<div class="card"><strong>Última noticia</strong><div style="margin-top:6px">${info.noticia.url ? `<a href="${esc(info.noticia.url)}" target="_blank" rel="noopener">${esc(info.noticia.titulo)}</a>` : esc(info.noticia.titulo)}</div></div>` : ""}
     </div></div>`;
   $("#sheet").hidden = false;
   document.body.style.overflow = "hidden";
+  loadEps(t);
 }
+// ── EPS trimestral (tabla inv_eps, la llena eps_sync.py) ──────────────────
+const MES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const qLbl = (iso) => { const [y, m] = String(iso).split("-"); return `${MES[+m - 1]} ${y.slice(2)}`; };
+const fEps = (v) => (isNum(v) ? (Math.abs(v) < 1 ? nf(3) : nf(2)).format(v) : "—");
+
+function epsChart(hist, proyT, simple = false) {
+  const real = hist.slice().reverse();                 // viejo → nuevo
+  const items = [...real.map((r) => ({ fin: r[0], v: r[2], est: r[3], p: false })),
+                 ...proyT.map((x) => ({ fin: x.fin, v: x.eps, est: null, p: true, lo: x.bajo, hi: x.alto }))];
+  if (items.length < 2) return "";
+  const W = 320, H = 132, padB = 16, padT = 14;
+  const vals = items.flatMap((i) => [i.v, i.est, i.hi, i.lo]).filter(isNum);
+  const mx = Math.max(0, ...vals), mn = Math.min(0, ...vals), rg = mx - mn || 1;
+  const y = (v) => padT + (mx - v) / rg * (H - padB - padT);
+  const bw = (W - 4) / items.length, gap = Math.max(1, bw * 0.22);
+  const y0 = y(0);
+  let out = `<line x1="0" x2="${W}" y1="${y0.toFixed(1)}" y2="${y0.toFixed(1)}" stroke="var(--line)"/>`;
+  let lastYear = "";
+  items.forEach((it, i) => {
+    const x = 2 + i * bw + gap / 2, w = bw - gap, top = y(Math.max(it.v, 0)), bot = y(Math.min(it.v, 0));
+    const h = Math.max(1, bot - top);
+    const beat = isNum(it.est) ? it.v >= it.est : null;
+    const fill = it.p ? "none" : it.v < 0 ? "var(--down)" : "var(--brass)";
+    out += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="${fill}"
+      ${it.p ? `stroke="var(--brass)" stroke-dasharray="3 2" stroke-width="1.2"` : `opacity="${beat === false ? 0.55 : 1}"`}>
+      <title>${qLbl(it.fin)} · ${it.p ? "proyectado" : "real"} ${fEps(it.v)}${isNum(it.est) ? ` · estimado ${fEps(it.est)}` : ""}</title></rect>`;
+    if (isNum(it.est)) out += `<line x1="${(x - 1).toFixed(1)}" x2="${(x + w + 1).toFixed(1)}" y1="${y(it.est).toFixed(1)}" y2="${y(it.est).toFixed(1)}" stroke="var(--ink)" stroke-width="1.4" opacity=".7"/>`;
+    const yr = it.fin.slice(0, 4);
+    if (yr !== lastYear && x < W - 26) { lastYear = yr; out += `<text x="${x.toFixed(1)}" y="${H - 3}" font-size="9" fill="var(--muted)" font-family="var(--f-num)">${yr}</text>`; }
+  });
+  const last = items.length - 1, it = items[last], lx = 2 + last * bw + bw - gap / 2;
+  const ly = it.v >= 0 ? y(Math.max(it.v, it.hi ?? it.v)) - 3 : Math.min(H - padB - 2, y(Math.min(it.v, it.lo ?? it.v)) + 10);
+  out += `<text x="${Math.min(W - 1, lx).toFixed(1)}" y="${Math.max(9, ly).toFixed(1)}" font-size="9.5" text-anchor="end" fill="var(--ink)" font-family="var(--f-num)">${fEps(it.v)}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;margin-top:8px" role="img" aria-label="${simple ? "Flujo de caja libre por acción por trimestre" : "EPS por trimestre desde 2020: barras llenas real, punteadas proyectado, raya estimado"}">${out}</svg>
+    <div class="sub" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
+      <span><span style="display:inline-block;width:9px;height:9px;background:var(--brass);border-radius:2px"></span> Real</span>
+      <span><span style="display:inline-block;width:9px;height:9px;border:1.2px dashed var(--brass);border-radius:2px"></span> Proyectado</span>
+      ${simple ? "" : `<span><span style="display:inline-block;width:12px;height:2px;background:var(--ink);opacity:.7;vertical-align:middle"></span> Estimado</span>
+      <span>Atenuada = no superó el estimado</span>`}</div>`;
+}
+
+function epsCardHtml(t, row) {
+  if (!row) return `<div class="card"><strong>EPS por trimestre</strong><div class="sub" style="margin-top:6px">Todavía sin histórico de EPS para este ticker. Se carga en las próximas corridas diarias.</div></div>`;
+  const hist = row.hist || [], proy = row.proy || [];
+  if (!hist.length && !proy.length) return `<div class="card"><strong>EPS por trimestre</strong><div class="sub" style="margin-top:6px">Alpha Vantage no tiene EPS para este ticker.</div></div>`;
+  const proyT = proy.filter((x) => x.periodo === "T"), proyA = proy.filter((x) => x.periodo === "A");
+  const ttm = hist.length >= 4 ? hist.slice(0, 4).reduce((a, r) => a + r[2], 0) : null;
+  const yoy = hist.length >= 5 && hist[4][2] > 0 ? (hist[0][2] / hist[4][2] - 1) * 100 : null;
+  const ult8 = hist.slice(0, 8).filter((r) => isNum(r[3]));
+  const beats = ult8.filter((r) => r[2] >= r[3]).length;
+  const price = livePrice(t);
+  const fy = proyA[0];
+  const peF = fy && isNum(price) && fy.eps > 0 ? price / fy.eps : null;
+  const peT = isNum(ttm) && ttm > 0 && isNum(price) ? price / ttm : null;
+  const rev = (x) => { if (!isNum(x.prev30) || !x.prev30) return ""; const d = (x.eps - x.prev30) / Math.abs(x.prev30) * 100;
+    return `<span class="sub ${cls(d)}">${Math.abs(d) < 0.05 ? "sin cambio" : fPct(d, 1)} 30d</span>`; };
+  const s0 = hist[0];
+  const sorpresa = s0 && isNum(s0[3]) && s0[3] !== 0 ? (s0[2] / s0[3] - 1) * 100 * Math.sign(s0[3]) : null;
+  const filas = hist.map((r) => { const sp = isNum(r[3]) && r[3] !== 0 ? (r[2] / r[3] - 1) * 100 * Math.sign(r[3]) : null;
+    return `<tr><td>${qLbl(r[0])}</td><td class="r num">${fEps(r[2])}</td><td class="r num">${fEps(r[3])}</td><td class="r num ${cls(sp)}">${fPct(sp, 1)}</td></tr>`; }).join("");
+  return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><strong>EPS por trimestre</strong>
+      ${ult8.length ? `<span class="pill ${beats / ult8.length >= 0.75 ? "verde" : beats / ult8.length >= 0.5 ? "amarillo" : "rojo"}">Superó ${beats} de ${ult8.length}</span>` : ""}</div>
+    ${epsChart(hist, proyT)}
+    <div class="metrics" style="margin-top:10px">
+      <div class="metric"><div class="k">Último trimestre${s0 ? ` · ${qLbl(s0[0])}` : ""}</div><div class="v num">${fEps(s0?.[2])} <span class="sub ${cls(sorpresa)}">${isNum(sorpresa) ? fPct(sorpresa, 1) + " vs est." : ""}</span></div></div>
+      <div class="metric"><div class="k">Crecimiento a/a</div><div class="v num ${cls(yoy)}">${fPct(yoy, 0)}</div></div>
+      <div class="metric"><div class="k">EPS últimos 12m</div><div class="v num">${fEps(ttm)} <span class="sub">${isNum(peT) ? "P/E " + nf(1).format(peT) : ""}</span></div></div>
+      <div class="metric"><div class="k">P/E proyectado${fy ? ` · año fiscal ${fy.fin.slice(0, 4)}` : ""}</div><div class="v num">${isNum(peF) ? nf(1).format(peF) : "—"}</div></div>
+    </div>
+    ${proy.length ? `<div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Proyección</th><th class="r">EPS</th><th class="r">Rango est.</th><th class="r">Revisión</th></tr></thead><tbody>
+      ${[...proyT, ...proyA].map((x) => `<tr><td>${x.periodo === "A" ? "Año fiscal" : "Trim."} ${qLbl(x.fin)}<div class="sub">${x.n} analistas${x.up30 || x.down30 ? ` · ↑${x.up30} ↓${x.down30}` : ""}</div></td>
+        <td class="r num">${fEps(x.eps)}${hist[3] && x.periodo === "T" ? `<div class="sub ${cls(x.eps - (hist.find((r) => r[0].slice(5, 7) === x.fin.slice(5, 7)) || [])[2])}">${(() => { const b = hist.find((r) => r[0].slice(5, 7) === x.fin.slice(5, 7) && r[0] < x.fin); return b && b[2] > 0 ? fPct((x.eps / b[2] - 1) * 100, 0) + " a/a" : ""; })()}</div>` : ""}</td>
+        <td class="r num sub">${isNum(x.bajo) && isNum(x.alto) ? `${fEps(x.bajo)} a ${fEps(x.alto)}` : "—"}</td><td class="r">${rev(x)}</td></tr>`).join("")}
+    </tbody></table></div>` : ""}
+    ${hist.length ? `<details style="margin-top:10px"><summary class="sub" style="cursor:pointer">Ver los ${hist.length} trimestres desde 2020</summary>
+      <div class="tbl-wrap" style="margin-top:6px"><table><thead><tr><th>Trimestre</th><th class="r">Real</th><th class="r">Estimado</th><th class="r">Sorpresa</th></tr></thead><tbody>${filas}</tbody></table></div></details>` : ""}
+    <div class="sub" style="margin-top:8px">EPS ajustado (el que compara el consenso), por fin de trimestre fiscal. Fuente: Alpha Vantage.</div>
+  </div>`;
+}
+
+// ── Flujo de caja libre por acción (row.fcf: [[fin, fcf_por_accion, ocf, capex, acciones], ...]) ──
+function fcfCardHtml(t, row) {
+  const f = (row?.fcf || []).filter((r) => isNum(r[1]));   // ignora la marca "sin_datos"
+  if (!f.length) return "";
+  const hist = row.hist || [], proy = row.proy || [];
+  const ttm = (arr, i) => (arr.length >= i + 4 ? arr.slice(i, i + 4).reduce((a, r) => a + r[1], 0) : null);
+  const fTtm = ttm(f, 0), fTtmPrev = ttm(f, 4);
+  const yoy = isNum(fTtm) && isNum(fTtmPrev) && fTtmPrev > 0 ? (fTtm / fTtmPrev - 1) * 100 : null;
+  const eTtm = hist.length >= 4 ? hist.slice(0, 4).reduce((a, r) => a + r[2], 0) : null;
+  const conv = isNum(fTtm) && isNum(eTtm) && eTtm > 0 && fTtm > 0 ? fTtm / eTtm : null;   // FCF/acción ÷ EPS ajustado, 12m
+  const price = livePrice(t);
+  const pfcf = isNum(price) && isNum(fTtm) && fTtm > 0 ? price / fTtm : null;
+  const ult = f[0][0];
+  const est = conv ? proy.filter((x) => x.fin > ult).map((x) => ({ ...x, v: x.eps * conv })) : [];
+  const estT = est.filter((x) => x.periodo === "T"), estA = est.filter((x) => x.periodo === "A");
+  const fmt = (v) => (isNum(v) ? nf(2).format(v) : "—");
+  // 12m acumulado por fila (historia) y a/a del trimestre
+  const rows = f.map((r, i) => { const t12 = ttm(f, i); const prev = f.find((x) => x[0].slice(5, 7) === r[0].slice(5, 7) && x[0] < r[0]);
+    const a = prev && prev[1] > 0 ? (r[1] / prev[1] - 1) * 100 : null;
+    return `<tr><td>${qLbl(r[0])}</td><td class="r num ${r[1] < 0 ? "down" : ""}">${fmt(r[1])}</td><td class="r num">${fmt(t12)}</td><td class="r num ${cls(a)}">${fPct(a, 0)}</td></tr>`; });
+  const chain = [...f.map((r) => r[1])];                    // nuevo → viejo
+  const t12est = {}; estT.forEach((x) => { chain.unshift(x.v); t12est[x.fin] = chain.length >= 4 ? chain.slice(0, 4).reduce((a, b) => a + b, 0) : null; });
+  const estRows = [...estT, ...estA].map((x) => { const prev = x.periodo === "T" ? f.find((r) => r[0].slice(5, 7) === x.fin.slice(5, 7) && r[0] < x.fin) : null;
+    const a = prev && prev[1] > 0 ? (x.v / prev[1] - 1) * 100 : null;
+    return `<tr style="background:var(--brass-soft)"><td>${x.periodo === "A" ? "Año fiscal" : "Trim."} ${qLbl(x.fin)} <span class="pill brass" style="font-size:10px;padding:1px 6px">est.</span></td>
+      <td class="r num">${fmt(x.v)}</td><td class="r num">${x.periodo === "A" ? `<span class="sub">año</span>` : fmt(t12est[x.fin])}</td><td class="r num ${cls(a)}">${fPct(a, 0)}</td></tr>`; }).join("");
+  const chartHist = f.map((r) => [r[0], null, r[1], null]);
+  return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><strong>Flujo de caja libre por acción</strong>
+      ${isNum(pfcf) ? `<span class="pill ${pfcf <= 20 ? "verde" : pfcf <= 40 ? "amarillo" : "rojo"}">P/FCF ${nf(1).format(pfcf)}</span>` : ""}</div>
+    ${epsChart(chartHist, estT.map((x) => ({ fin: x.fin, eps: x.v })), true)}
+    <div class="metrics" style="margin-top:10px">
+      <div class="metric"><div class="k">FCF/acción 12m</div><div class="v num">${fmt(fTtm)}</div></div>
+      <div class="metric"><div class="k">Crecimiento 12m a/a</div><div class="v num ${cls(yoy)}">${fPct(yoy, 0)}</div></div>
+      <div class="metric"><div class="k">Rendimiento FCF</div><div class="v num">${isNum(pfcf) ? fPct(100 / pfcf, 1, false) : "—"}</div></div>
+      <div class="metric"><div class="k">Conversión FCF / EPS</div><div class="v num">${isNum(conv) ? nf(0).format(conv * 100) + "%" : "—"}</div></div>
+    </div>
+    <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Trimestre</th><th class="r">FCF/acción</th><th class="r">12m</th><th class="r">a/a</th></tr></thead>
+      <tbody>${estRows}${rows.slice(0, 8).join("")}</tbody></table></div>
+    ${rows.length > 8 ? `<details style="margin-top:8px"><summary class="sub" style="cursor:pointer">Ver los ${rows.length} trimestres desde ${f[f.length - 1][0].slice(0, 4)}</summary>
+      <div class="tbl-wrap" style="margin-top:6px"><table><tbody>${rows.slice(8).join("")}</tbody></table></div></details>` : ""}
+    <div class="sub" style="margin-top:8px">FCF = flujo de caja operativo − inversión en activos fijos (capex), dividido entre las acciones en circulación de cada trimestre.
+      ${est.length ? `<strong>Las filas "est." no son consenso de analistas:</strong> son el EPS de consenso × la conversión FCF/EPS de los últimos 12 meses (${nf(0).format(conv * 100)}%).` : ""} Fuente: Alpha Vantage.</div>
+  </div>`;
+}
+
+async function loadEps(t) {
+  const slot = document.getElementById("eps-slot"); if (!slot) return;
+  if (!(t in S.E)) {
+    try {
+      const { data, error } = await sb.from("inv_eps").select("hist,proy,fcf,actualizado").eq("ticker", t).maybeSingle();
+      if (error) throw error;
+      S.E[t] = data || null;
+    } catch (e) { console.warn(e); slot.innerHTML = `<div class="card sub">No se pudo leer el EPS.</div>`; return; }
+  }
+  const cur = document.getElementById("eps-slot");
+  if (cur && cur.dataset.eps === t) cur.innerHTML = epsCardHtml(t, S.E[t]) + fcfCardHtml(t, S.E[t]);
+}
+
 function closeSheet() { $("#sheet").hidden = true; $("#sheet").innerHTML = ""; document.body.style.overflow = ""; }
+
+// ── Glosario: explicación al pasar el mouse o tocar cualquier título o medida ──
+// Las claves se buscan al inicio del texto de cada etiqueta (sin distinguir mayúsculas).
+const GLOSARIO = [
+  // Ficha · tu posición
+  ["Tu posición", "Tu posición", "Lo que tienes hoy de este título en IBKR: cantidad, costo, valor actual y ganancia o pérdida sin vender."],
+  ["Cantidad", "Cantidad", "Número de acciones (o unidades) que tienes en IBKR."],
+  ["Cant.", "Cantidad", "Número de acciones de la operación."],
+  ["Costo promedio", "Costo promedio", "Precio promedio que pagaste por cada acción, ponderando todas tus compras."],
+  ["Valor · peso", "Valor · peso", "Valor: cantidad × precio de ahora. Peso: qué % de tu cartera total (incluida la caja) representa este título."],
+  ["No realizado", "Ganancia/pérdida no realizada", "Lo que ganarías o perderías si vendieras hoy: (precio de ahora − costo promedio) × cantidad. No es plata en el bolsillo hasta que vendes."],
+  ["P&L realizado", "P&L realizado", "Ganancia o pérdida de las ventas ya cerradas (método FIFO: se vende primero lo que se compró primero)."],
+  ["Pilar 4", "Semáforo Pilar 4", "Disciplina de compra por título según tu historial en IBKR. Regla A: muchas compras seguidas sin cerrar en ganancia. Regla B: racha de cierres seguidos en pérdida. Regla C: la última compra fue más grande que la anterior con la posición en rojo. ROJO = se cumple al menos una regla: pausa antes de comprar más. VERDE = sin alertas."],
+  ["Semáforo Pilar 4", "Semáforo Pilar 4", "Disciplina de compra por título según tu historial en IBKR (reglas A, B y C de frecuencia y tamaño de compras). ROJO = pausa antes de comprar más."],
+  // Niveles por volumen
+  ["Niveles por volumen", "Niveles por volumen", "Pisos y techos calculados donde más volumen se ha negociado (perfil de volumen). Son zonas donde el precio suele frenar: el piso como soporte (compra) y el techo como resistencia (venta). Se calculan en 3 horizontes de tiempo."],
+  ["Horizonte", "Horizonte", "Ventana de tiempo usada para calcular piso y techo: táctico (6 meses), estructural (2 años) e histórico (5 años)."],
+  ["Táctico 6m", "Horizonte táctico (6 meses)", "Piso y techo con el volumen de los últimos 6 meses. Sirve para entradas y salidas de corto plazo."],
+  ["Estructural 2a", "Horizonte estructural (2 años)", "Piso y techo con el volumen de los últimos 2 años. Marca la tendencia de mediano plazo."],
+  ["Histórico 5a", "Horizonte histórico (5 años)", "Piso y techo con el volumen de los últimos 5 años. Las zonas de largo plazo más fuertes."],
+  ["Piso", "Piso", "Precio con mucho volumen negociado por debajo del precio actual: zona de soporte donde suelen aparecer compradores. Referencia para comprar."],
+  ["Techo", "Techo", "Precio con mucho volumen negociado por encima del precio actual: zona de resistencia donde suelen aparecer vendedores. Referencia para vender o tomar ganancias."],
+  ["R:B", "Riesgo : Beneficio", "Cuánto podrías ganar hasta el techo por cada peso que arriesgas hasta el piso. 2x = el beneficio potencial es el doble del riesgo. 'bajo piso' = el precio ya rompió el piso; 'en piso' = está tan cerca del piso que el cálculo no es confiable."],
+  ["Rango est.", "Rango de estimados", "EPS más bajo y más alto entre los analistas que cubren el título. Un rango amplio = mucha incertidumbre."],
+  ["Rango", "Posición en el rango", "Dónde está el precio entre el piso (0%) y el techo (100%). Verde: cerca del piso con R:B > 2. Rojo: arriba del 65% del rango o R:B < 1. Amarillo: en medio."],
+  ["Califica", "Veredicto: Califica", "La relación riesgo/beneficio y la posición del precio frente a sus pisos y techos son favorables para comprar o sumar."],
+  ["Vigilar", "Veredicto: Vigilar", "Condiciones mixtas: no es zona clara de compra ni de venta. Seguirlo de cerca."],
+  ["No califica", "Veredicto: No califica", "Riesgo/beneficio desfavorable (precio lejos del piso o cerca del techo). No es momento de comprar."],
+  ["Defensa táctica", "Defensa táctica", "Precio de stop de corto plazo. Si el precio cierra por debajo, la tesis de corto plazo se rompió (Art. V de tu Constitución DCLA)."],
+  ["Defensa estructural", "Defensa estructural", "Precio de stop de mediano plazo. Romperla indica que la tendencia de fondo cambió (Art. V de tu Constitución DCLA)."],
+  ["Volatilidad anual", "Volatilidad anual", "Cuánto se mueve el precio en un año típico (desviación estándar anualizada). 92% = movimientos muy grandes: posiciones más pequeñas y revisiones más frecuentes."],
+  ["Revisión sugerida", "Revisión sugerida", "Cada cuánto revisar el título según su volatilidad: más volátil, más seguido."],
+  ["Entrada por tramos", "Entrada por tramos", "Plan para comprar en partes en cada piso (con el % del monto en cada uno), en vez de todo de una vez."],
+  ["Salida por tramos", "Salida por tramos", "Plan para vender en partes en cada techo (con el % de la posición en cada uno)."],
+  // Valuación
+  ["Valuación y analistas", "Valuación y analistas", "Qué tan caro está el título frente a sus utilidades, la calidad del negocio y qué opinan los analistas (Alpha Vantage, se refresca cada pocos días)."],
+  ["Calidad", "Calidad del negocio (lente Buffett)", "Suma señales: ROE ≥ 15% y margen operativo ≥ 15% suman; ROE o margen < 5% restan; crecimiento de ingresos y de EPS positivo suma, negativo resta. Alta / Media / Baja. Necesita al menos 2 señales con dato."],
+  ["P/E futuro", "P/E futuro", "Precio ÷ EPS esperado por los analistas para los próximos 12 meses. Más bajo que el P/E actual = se espera que las utilidades crezcan."],
+  ["P/E proyectado", "P/E proyectado", "Precio de ahora ÷ EPS de consenso del próximo año fiscal."],
+  ["P/E", "P/E (precio / utilidad)", "Cuántos años de utilidades actuales pagas por la acción. Más alto = más caro (o más crecimiento esperado). 'n/a' = la empresa tiene pérdidas."],
+  ["PEG", "PEG", "P/E ÷ crecimiento esperado de utilidades. Cerca de 1 = precio justo para su crecimiento; menos de 1 = barato para lo que crece; más de 2 = caro."],
+  ["ROE", "ROE (rentabilidad del patrimonio)", "Utilidad neta ÷ patrimonio, últimos 12 meses. Cuánto gana la empresa con el dinero de los accionistas. Más de 15% es bueno."],
+  ["Margen operativo", "Margen operativo", "Utilidad operativa ÷ ingresos. Cuánto le queda del negocio principal por cada dólar vendido. Negativo = pierde plata operando."],
+  ["Ingresos a/a", "Ingresos a/a", "Crecimiento de las ventas frente al mismo trimestre del año anterior."],
+  ["Consenso", "Consenso de analistas", "Recomendación promedio de los analistas que cubren el título (Compra fuerte → Venta fuerte) y cuántos son."],
+  ["Precio objetivo", "Precio objetivo", "Precio promedio que esperan los analistas en 12 meses. El % es el potencial frente al precio de ahora."],
+  // Earnings / EPS
+  ["Earnings", "Earnings", "Fecha del próximo reporte trimestral de resultados y lo que espera el mercado."],
+  ["Próximo", "Próximo reporte", "Fecha del próximo reporte trimestral de resultados."],
+  ["EPS estimado", "EPS estimado", "Utilidad por acción que esperan los analistas para el próximo reporte."],
+  ["Revisiones 30d", "Revisiones 30 días", "Si los analistas subieron o bajaron su estimado en el último mes. Revisiones al alza suelen anticipar buenos resultados."],
+  ["Siguiente call", "Siguiente call", "Fecha de la conferencia con inversionistas del siguiente reporte."],
+  ["EPS por trimestre", "EPS (utilidad por acción)", "Utilidad ajustada de cada trimestre dividida entre el número de acciones. Es el dato que compara el mercado contra lo esperado. Barras llenas: real; punteadas: proyección de consenso; raya: lo que se esperaba."],
+  ["Superó", "Le ganó al estimado", "En cuántos de los últimos trimestres el EPS real fue igual o mayor al que esperaban los analistas. 6 de 8 o más es consistente."],
+  ["Último trimestre", "Último trimestre", "EPS del último reporte y su sorpresa: cuánto quedó por encima (+) o por debajo (−) de lo esperado."],
+  ["Crecimiento a/a", "Crecimiento a/a", "EPS del último trimestre frente al mismo trimestre del año anterior."],
+  ["EPS últimos 12m", "EPS últimos 12 meses", "Suma del EPS de los últimos 4 trimestres. El P/E al lado usa el precio de ahora."],
+  ["Proyección", "Proyección", "Estimados de consenso para los próximos trimestres y años fiscales: promedio, rango (más bajo – más alto), número de analistas y revisiones en 30 días (↑ al alza, ↓ a la baja)."],
+  ["Sorpresa", "Sorpresa", "Diferencia % entre el EPS real y el estimado."],
+  ["Revisión", "Revisión 30 días", "Cuánto cambió el estimado promedio en los últimos 30 días."],
+  ["Estimado", "Estimado", "EPS que esperaban los analistas antes del reporte."],
+  ["Real", "Real", "EPS reportado por la empresa."],
+  ["Trimestre", "Trimestre", "Trimestre fiscal, nombrado por su mes de cierre."],
+  // FCF
+  ["Flujo de caja libre", "Flujo de caja libre (FCF) por acción", "Caja que genera el negocio después de invertir en activos fijos: flujo de caja operativo − capex, dividido entre las acciones. Es más difícil de maquillar que la utilidad contable."],
+  ["P/FCF", "Precio / flujo de caja libre", "Cuántas veces pagas el FCF anual por acción. Verde ≤ 20, amarillo ≤ 40, rojo más arriba."],
+  ["FCF/acción 12m", "FCF por acción 12 meses", "Suma del FCF por acción de los últimos 4 trimestres."],
+  ["FCF/acción", "FCF por acción", "Flujo de caja libre del trimestre ÷ acciones en circulación."],
+  ["Crecimiento 12m a/a", "Crecimiento 12m a/a", "FCF de los últimos 12 meses frente a los 12 meses anteriores."],
+  ["Rendimiento FCF", "Rendimiento FCF", "FCF anual por acción ÷ precio. Es como la 'tasa de interés' que te paga el negocio en caja: 5% o más es atractivo."],
+  ["Conversión FCF", "Conversión FCF / EPS", "Qué parte de la utilidad (EPS) se convierte en caja libre. Cerca de 100% o más = utilidades de buena calidad."],
+  ["12m", "12 meses", "Acumulado de los últimos 4 trimestres hasta esa fila."],
+  ["a/a", "Año contra año", "Cambio frente al mismo periodo del año anterior."],
+  ["est.", "Estimado (no es consenso)", "FCF proyectado = EPS de consenso × conversión FCF/EPS de los últimos 12 meses."],
+  ["Fuerza relativa", "Fuerza relativa", "Si el título le está ganando o perdiendo a los índices (S&P 500, Nasdaq) y a Bitcoin en el mismo periodo."],
+  // Resumen / cartera
+  ["Valor de la cartera", "Valor de la cartera", "Suma de tus posiciones a precio de ahora más la caja en IBKR. Debajo, su equivalente en pesos con el dólar del momento."],
+  ["Hoy", "Hoy", "Cuánto ha ganado o perdido tu cartera (o el título) desde el cierre de ayer."],
+  ["Liquidez", "Liquidez", "Caja disponible como % del valor total de la cartera."],
+  ["DCLA", "Constitución DCLA", "Tus reglas de inversión: Art. I (sin acciones bajo $5, cripto ni margen), Art. III (topes de concentración por título y bloque) y Art. V (respetar las defensas). 'ok' = sin alertas."],
+  ["Constitución DCLA", "Constitución DCLA", "Tus reglas de inversión revisadas en vivo con los precios de ahora."],
+  ["Art. I", "Art. I", "Prohibiciones: acciones bajo $5, cripto o sus proxies, y uso de margen."],
+  ["Art. III", "Art. III", "Topes de concentración: ningún título ni bloque de riesgo puede pasar el % máximo de la cartera."],
+  ["Art. V", "Art. V", "Si el precio rompe la defensa táctica o estructural, se revisa o se sale de la posición."],
+  ["Concentración por bloque", "Concentración por bloque de riesgo", "Títulos que tienden a moverse juntos (p. ej. cripto: MSTR, IREN, BTC) sumados. La raya gris es el tope permitido; rojo = lo pasaste."],
+  ["Concentración por sector", "Concentración por sector", "% de la cartera en cada sector frente al tope."],
+  ["Caja", "Caja", "Efectivo disponible en IBKR."],
+  ["Invertido", "Invertido", "Valor de mercado de tus posiciones, sin la caja."],
+  ["Apalancamiento", "Apalancamiento", "Cuánto de tu cartera está financiado con préstamo del bróker (margen). 0% = solo plata propia."],
+  ["Interés margen", "Interés de margen", "Intereses que IBKR te cobró este mes por usar margen."],
+  ["Top 5", "Top 5 con el precio de ahora", "Comprar: los títulos más cerca de su piso con mejor riesgo/beneficio. Vender: los más cerca de su techo."],
+  ["Alertas en vivo", "Alertas en vivo", "Títulos que cruzaron o están muy cerca de un piso o techo con el precio de ahora."],
+  ["Earnings próximos", "Earnings próximos", "Títulos del watchlist que reportan resultados en las próximas 3 semanas."],
+  // Macro
+  ["Mercado ahora", "Mercado ahora", "Indicadores del mercado con precio en vivo."],
+  ["S&P 500", "S&P 500 (SPY)", "Las 500 empresas más grandes de EE. UU. Es la referencia del mercado: si tu cartera le gana, vas mejor que el promedio."],
+  ["Nasdaq 100", "Nasdaq 100 (QQQ)", "Las 100 tecnológicas y de crecimiento más grandes del Nasdaq. Tu cartera, cargada en IA y chips, suele moverse parecido."],
+  ["Bitcoin", "Bitcoin", "Precio en vivo. Mueve directamente a MSTR, IREN y otros títulos ligados a cripto."],
+  ["VIX", "VIX", "Índice del miedo: volatilidad esperada del S&P 500. Menos de 15 = calma; más de 25 = nervios; más de 30 = pánico."],
+  ["Bono 10 años", "Bono del Tesoro a 10 años", "Tasa de interés de largo plazo en EE. UU. Si sube, presiona a la baja las acciones de crecimiento."],
+  ["Tesoro 10 años", "Bono del Tesoro a 10 años", "Tasa de interés de largo plazo en EE. UU. y su cambio en puntos básicos (pb)."],
+  ["Índice dólar", "Índice dólar (DXY)", "Fuerza del dólar frente a las principales monedas. Un dólar fuerte suele pesar sobre acciones y cripto."],
+  ["Dólar (DXY)", "Índice dólar (DXY) 1 mes", "Cambio de la fuerza del dólar en el último mes."],
+  ["Dólar (USD/COP)", "Dólar en Colombia", "Pesos por dólar en vivo. Si sube, tu cartera vale más en pesos aunque no se mueva en dólares."],
+  ["Régimen macro", "Régimen macro", "Lectura del entorno: risk-on (favorable para riesgo), risk-off (defensivo) o neutral, combinando tasas, dólar, inflación y tendencia del Nasdaq."],
+  ["Fed funds", "Tasa de la Fed", "Tasa de interés de referencia de la Reserva Federal."],
+  ["Inflación", "Inflación (CPI a/a)", "Variación de los precios al consumidor en EE. UU. en el último año."],
+  ["Tasa real", "Tasa real", "Bono a 10 años menos inflación. Positiva y alta = el dinero 'seguro' rinde bien y compite con las acciones."],
+  ["Nasdaq vs media 200", "Nasdaq vs media de 200 días", "Qué tan arriba (+) o abajo (−) está el Nasdaq de su promedio de 200 días. Debajo = tendencia bajista."],
+];
+const _G = GLOSARIO.map(([k, t, d]) => [k.toLowerCase(), t, d]).sort((a, b) => b[0].length - a[0].length);
+function glosa(txt) {
+  const s = String(txt || "").replace(/\s+/g, " ").trim().toLowerCase().replace(/:$/, "");
+  if (!s || s.length > 60) return null;
+  if (/\bdcla\b/.test(s) && !s.startsWith("constitución")) return _G.find((g) => g[0] === "dcla").slice(1);
+  for (const [k, t, d] of _G) if (s === k || s.startsWith(k + " ") || s.startsWith(k + "·") || (k.length > 3 && s.startsWith(k))) return [t, d];
+  return null;
+}
+const TIP_SEL = ".metric .k, .kv .k, .label, th, h2, .card strong, .pill, td:first-child, .sheet .sub strong";
+function annotateTips(root) {
+  root.querySelectorAll(TIP_SEL).forEach((el) => {
+    if (el.dataset.tipDone) return;
+    el.dataset.tipDone = "1";
+    if (el.closest("[data-t]") || el.closest(".tabs")) return;       // filas que abren la ficha: no robarles el toque
+    const txt = el.childNodes.length && el.childNodes[0].nodeType === 3 ? el.childNodes[0].textContent : el.textContent;
+    const g = glosa(txt) || glosa(el.textContent);
+    if (!g) return;
+    el.dataset.tip = g[0]; el.dataset.tipD = g[1];
+    el.classList.add("tip"); el.tabIndex = 0;
+  });
+}
+const tipBox = document.createElement("div");
+tipBox.id = "tip"; tipBox.setAttribute("role", "tooltip"); tipBox.hidden = true;
+document.body.appendChild(tipBox);
+let tipFor = null, tipTimer = null, tipAt = 0;
+function showTip(el) {
+  if (tipFor !== el) tipAt = Date.now();
+  tipFor = el;
+  tipBox.innerHTML = `<strong>${esc(el.dataset.tip)}</strong><div>${esc(el.dataset.tipD)}</div>`;
+  tipBox.hidden = false;
+  const r = el.getBoundingClientRect(), w = Math.min(300, window.innerWidth - 24);
+  tipBox.style.maxWidth = w + "px";
+  const bh = tipBox.offsetHeight, bw = tipBox.offsetWidth;
+  let left = Math.max(12, Math.min(r.left, window.innerWidth - bw - 12));
+  let top = r.bottom + 8;
+  if (top + bh > window.innerHeight - 12) top = Math.max(12, r.top - bh - 8);
+  tipBox.style.left = left + "px"; tipBox.style.top = top + "px";
+}
+function hideTip() { tipFor = null; tipBox.hidden = true; clearTimeout(tipTimer); }
+const canHover = window.matchMedia("(hover: hover)").matches;
+if (canHover) {
+  document.addEventListener("mouseover", (e) => { const el = e.target.closest?.("[data-tip]"); if (!el || el === tipFor) return; clearTimeout(tipTimer); tipTimer = setTimeout(() => showTip(el), 250); });
+  document.addEventListener("mouseout", (e) => { const el = e.target.closest?.("[data-tip]"); if (el && !el.contains(e.relatedTarget)) hideTip(); });
+}
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-tip]");
+  if (el) { e.preventDefault(); e.stopPropagation(); if (tipFor === el && !tipBox.hidden && Date.now() - tipAt > 400) hideTip(); else showTip(el); return; }
+  if (!e.target.closest("#tip")) hideTip();
+}, true);
+document.addEventListener("focusin", (e) => { if (e.target.matches?.("[data-tip]")) showTip(e.target); });
+document.addEventListener("focusout", (e) => { if (e.target.matches?.("[data-tip]")) hideTip(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTip(); });
+window.addEventListener("scroll", hideTip, true);
+window.addEventListener("resize", hideTip);
+new MutationObserver(() => annotateTips(document.body)).observe(document.body, { childList: true, subtree: true });
 
 // ── Datos y sesión ────────────────────────────────────────────────────────
 async function loadSnapshot() {
@@ -597,6 +927,8 @@ document.addEventListener("click", (ev) => {
   if (tab) { S.view = tab.dataset.v; try { localStorage.setItem("mb_view", S.view); } catch (_) {} render(); window.scrollTo({ top: 0 }); return; }
   const chip = ev.target.closest("[data-sector]");
   if (chip) { S.sector = chip.dataset.sector; renderWatch(); return; }
+  const wm = ev.target.closest("[data-wmode]");
+  if (wm) { S.wmode = wm.dataset.wmode; try { localStorage.setItem("mb_wmode", S.wmode); } catch (_) {} renderWatch(); return; }
   const so = ev.target.closest("[data-sort]");
   if (so) { S.sort = so.dataset.sort; renderWatch(); return; }
 });
