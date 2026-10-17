@@ -579,7 +579,7 @@ function openSheet(t) {
           <div class="metric"><div class="k">EPS estimado</div><div class="v num">${isNum(e.eps_estimado) ? nf(2).format(e.eps_estimado) : "—"}</div></div>
           <div class="metric"><div class="k">Revisiones 30d</div><div class="v">${esc(e.tendencia_revisiones || "—")}</div></div>
           <div class="metric"><div class="k">Siguiente call</div><div class="v">${fDate(info.siguiente_call, true)}</div></div></div></div>` : ""}
-      <div id="eps-slot" data-eps="${esc(t)}"><div class="card sub">Cargando EPS…</div></div>
+      <div id="eps-slot" class="stack" data-eps="${esc(t)}"><div class="card sub">Cargando EPS…</div></div>
       ${Object.values(fr).some(Boolean) ? `<div class="card"><strong>Fuerza relativa</strong><ul class="list" style="margin-top:8px">${["SPY", "QQQ", "BTC"].filter((k) => fr[k]).map((k) => `<li><span class="ic num" style="font-size:11px">${k}</span><span>${esc(fr[k].texto)}</span></li>`).join("")}</ul></div>` : ""}
       ${info.noticia?.titulo ? `<div class="card"><strong>Última noticia</strong><div style="margin-top:6px">${info.noticia.url ? `<a href="${esc(info.noticia.url)}" target="_blank" rel="noopener">${esc(info.noticia.titulo)}</a>` : esc(info.noticia.titulo)}</div></div>` : ""}
     </div></div>`;
@@ -592,7 +592,7 @@ const MES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct
 const qLbl = (iso) => { const [y, m] = String(iso).split("-"); return `${MES[+m - 1]} ${y.slice(2)}`; };
 const fEps = (v) => (isNum(v) ? (Math.abs(v) < 1 ? nf(3) : nf(2)).format(v) : "—");
 
-function epsChart(hist, proyT) {
+function epsChart(hist, proyT, simple = false) {
   const real = hist.slice().reverse();                 // viejo → nuevo
   const items = [...real.map((r) => ({ fin: r[0], v: r[2], est: r[3], p: false })),
                  ...proyT.map((x) => ({ fin: x.fin, v: x.eps, est: null, p: true, lo: x.bajo, hi: x.alto }))];
@@ -620,12 +620,12 @@ function epsChart(hist, proyT) {
   const last = items.length - 1, it = items[last], lx = 2 + last * bw + bw - gap / 2;
   const ly = it.v >= 0 ? y(Math.max(it.v, it.hi ?? it.v)) - 3 : Math.min(H - padB - 2, y(Math.min(it.v, it.lo ?? it.v)) + 10);
   out += `<text x="${Math.min(W - 1, lx).toFixed(1)}" y="${Math.max(9, ly).toFixed(1)}" font-size="9.5" text-anchor="end" fill="var(--ink)" font-family="var(--f-num)">${fEps(it.v)}</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;margin-top:8px" role="img" aria-label="EPS por trimestre desde 2020: barras llenas real, punteadas proyectado, raya estimado">${out}</svg>
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;margin-top:8px" role="img" aria-label="${simple ? "Flujo de caja libre por acción por trimestre" : "EPS por trimestre desde 2020: barras llenas real, punteadas proyectado, raya estimado"}">${out}</svg>
     <div class="sub" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
       <span><span style="display:inline-block;width:9px;height:9px;background:var(--brass);border-radius:2px"></span> Real</span>
       <span><span style="display:inline-block;width:9px;height:9px;border:1.2px dashed var(--brass);border-radius:2px"></span> Proyectado</span>
-      <span><span style="display:inline-block;width:12px;height:2px;background:var(--ink);opacity:.7;vertical-align:middle"></span> Estimado</span>
-      <span>Atenuada = no superó el estimado</span></div>`;
+      ${simple ? "" : `<span><span style="display:inline-block;width:12px;height:2px;background:var(--ink);opacity:.7;vertical-align:middle"></span> Estimado</span>
+      <span>Atenuada = no superó el estimado</span>`}</div>`;
 }
 
 function epsCardHtml(t, row) {
@@ -667,17 +667,62 @@ function epsCardHtml(t, row) {
   </div>`;
 }
 
+// ── Flujo de caja libre por acción (row.fcf: [[fin, fcf_por_accion, ocf, capex, acciones], ...]) ──
+function fcfCardHtml(t, row) {
+  const f = row?.fcf || [];
+  if (!f.length) return "";
+  const hist = row.hist || [], proy = row.proy || [];
+  const ttm = (arr, i) => (arr.length >= i + 4 ? arr.slice(i, i + 4).reduce((a, r) => a + r[1], 0) : null);
+  const fTtm = ttm(f, 0), fTtmPrev = ttm(f, 4);
+  const yoy = isNum(fTtm) && isNum(fTtmPrev) && fTtmPrev > 0 ? (fTtm / fTtmPrev - 1) * 100 : null;
+  const eTtm = hist.length >= 4 ? hist.slice(0, 4).reduce((a, r) => a + r[2], 0) : null;
+  const conv = isNum(fTtm) && isNum(eTtm) && eTtm > 0 && fTtm > 0 ? fTtm / eTtm : null;   // FCF/acción ÷ EPS ajustado, 12m
+  const price = livePrice(t);
+  const pfcf = isNum(price) && isNum(fTtm) && fTtm > 0 ? price / fTtm : null;
+  const ult = f[0][0];
+  const est = conv ? proy.filter((x) => x.fin > ult).map((x) => ({ ...x, v: x.eps * conv })) : [];
+  const estT = est.filter((x) => x.periodo === "T"), estA = est.filter((x) => x.periodo === "A");
+  const fmt = (v) => (isNum(v) ? nf(2).format(v) : "—");
+  // 12m acumulado por fila (historia) y a/a del trimestre
+  const rows = f.map((r, i) => { const t12 = ttm(f, i); const prev = f.find((x) => x[0].slice(5, 7) === r[0].slice(5, 7) && x[0] < r[0]);
+    const a = prev && prev[1] > 0 ? (r[1] / prev[1] - 1) * 100 : null;
+    return `<tr><td>${qLbl(r[0])}</td><td class="r num ${r[1] < 0 ? "down" : ""}">${fmt(r[1])}</td><td class="r num">${fmt(t12)}</td><td class="r num ${cls(a)}">${fPct(a, 0)}</td></tr>`; });
+  const chain = [...f.map((r) => r[1])];                    // nuevo → viejo
+  const t12est = {}; estT.forEach((x) => { chain.unshift(x.v); t12est[x.fin] = chain.length >= 4 ? chain.slice(0, 4).reduce((a, b) => a + b, 0) : null; });
+  const estRows = [...estT, ...estA].map((x) => { const prev = x.periodo === "T" ? f.find((r) => r[0].slice(5, 7) === x.fin.slice(5, 7) && r[0] < x.fin) : null;
+    const a = prev && prev[1] > 0 ? (x.v / prev[1] - 1) * 100 : null;
+    return `<tr style="background:var(--brass-soft)"><td>${x.periodo === "A" ? "Año fiscal" : "Trim."} ${qLbl(x.fin)} <span class="pill brass" style="font-size:10px;padding:1px 6px">est.</span></td>
+      <td class="r num">${fmt(x.v)}</td><td class="r num">${x.periodo === "A" ? `<span class="sub">año</span>` : fmt(t12est[x.fin])}</td><td class="r num ${cls(a)}">${fPct(a, 0)}</td></tr>`; }).join("");
+  const chartHist = f.map((r) => [r[0], null, r[1], null]);
+  return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><strong>Flujo de caja libre por acción</strong>
+      ${isNum(pfcf) ? `<span class="pill ${pfcf <= 20 ? "verde" : pfcf <= 40 ? "amarillo" : "rojo"}">P/FCF ${nf(1).format(pfcf)}</span>` : ""}</div>
+    ${epsChart(chartHist, estT.map((x) => ({ fin: x.fin, eps: x.v })), true)}
+    <div class="metrics" style="margin-top:10px">
+      <div class="metric"><div class="k">FCF/acción 12m</div><div class="v num">${fmt(fTtm)}</div></div>
+      <div class="metric"><div class="k">Crecimiento 12m a/a</div><div class="v num ${cls(yoy)}">${fPct(yoy, 0)}</div></div>
+      <div class="metric"><div class="k">Rendimiento FCF</div><div class="v num">${isNum(pfcf) ? fPct(100 / pfcf, 1, false) : "—"}</div></div>
+      <div class="metric"><div class="k">Conversión FCF / EPS</div><div class="v num">${isNum(conv) ? nf(0).format(conv * 100) + "%" : "—"}</div></div>
+    </div>
+    <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Trimestre</th><th class="r">FCF/acción</th><th class="r">12m</th><th class="r">a/a</th></tr></thead>
+      <tbody>${estRows}${rows.slice(0, 8).join("")}</tbody></table></div>
+    ${rows.length > 8 ? `<details style="margin-top:8px"><summary class="sub" style="cursor:pointer">Ver los ${rows.length} trimestres desde ${f[f.length - 1][0].slice(0, 4)}</summary>
+      <div class="tbl-wrap" style="margin-top:6px"><table><tbody>${rows.slice(8).join("")}</tbody></table></div></details>` : ""}
+    <div class="sub" style="margin-top:8px">FCF = flujo de caja operativo − inversión en activos fijos (capex), dividido entre las acciones en circulación de cada trimestre.
+      ${est.length ? `<strong>Las filas "est." no son consenso de analistas:</strong> son el EPS de consenso × la conversión FCF/EPS de los últimos 12 meses (${nf(0).format(conv * 100)}%).` : ""} Fuente: Alpha Vantage.</div>
+  </div>`;
+}
+
 async function loadEps(t) {
   const slot = document.getElementById("eps-slot"); if (!slot) return;
   if (!(t in S.E)) {
     try {
-      const { data, error } = await sb.from("inv_eps").select("hist,proy,actualizado").eq("ticker", t).maybeSingle();
+      const { data, error } = await sb.from("inv_eps").select("hist,proy,fcf,actualizado").eq("ticker", t).maybeSingle();
       if (error) throw error;
       S.E[t] = data || null;
     } catch (e) { console.warn(e); slot.innerHTML = `<div class="card sub">No se pudo leer el EPS.</div>`; return; }
   }
   const cur = document.getElementById("eps-slot");
-  if (cur && cur.dataset.eps === t) cur.innerHTML = epsCardHtml(t, S.E[t]);
+  if (cur && cur.dataset.eps === t) cur.innerHTML = epsCardHtml(t, S.E[t]) + fcfCardHtml(t, S.E[t]);
 }
 
 function closeSheet() { $("#sheet").hidden = true; $("#sheet").innerHTML = ""; document.body.style.overflow = ""; }
