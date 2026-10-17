@@ -669,7 +669,7 @@ function epsCardHtml(t, row) {
 
 // ── Flujo de caja libre por acción (row.fcf: [[fin, fcf_por_accion, ocf, capex, acciones], ...]) ──
 function fcfCardHtml(t, row) {
-  const f = row?.fcf || [];
+  const f = (row?.fcf || []).filter((r) => isNum(r[1]));   // ignora la marca "sin_datos"
   if (!f.length) return "";
   const hist = row.hist || [], proy = row.proy || [];
   const ttm = (arr, i) => (arr.length >= i + 4 ? arr.slice(i, i + 4).reduce((a, r) => a + r[1], 0) : null);
