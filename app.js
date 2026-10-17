@@ -656,7 +656,7 @@ function epsCardHtml(t, row) {
       <div class="metric"><div class="k">EPS últimos 12m</div><div class="v num">${fEps(ttm)} <span class="sub">${isNum(peT) ? "P/E " + nf(1).format(peT) : ""}</span></div></div>
       <div class="metric"><div class="k">P/E proyectado${fy ? ` · año fiscal ${fy.fin.slice(0, 4)}` : ""}</div><div class="v num">${isNum(peF) ? nf(1).format(peF) : "—"}</div></div>
     </div>
-    ${proy.length ? `<div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Proyección</th><th class="r">EPS</th><th class="r">Rango</th><th class="r">Revisión</th></tr></thead><tbody>
+    ${proy.length ? `<div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Proyección</th><th class="r">EPS</th><th class="r">Rango est.</th><th class="r">Revisión</th></tr></thead><tbody>
       ${[...proyT, ...proyA].map((x) => `<tr><td>${x.periodo === "A" ? "Año fiscal" : "Trim."} ${qLbl(x.fin)}<div class="sub">${x.n} analistas${x.up30 || x.down30 ? ` · ↑${x.up30} ↓${x.down30}` : ""}</div></td>
         <td class="r num">${fEps(x.eps)}${hist[3] && x.periodo === "T" ? `<div class="sub ${cls(x.eps - (hist.find((r) => r[0].slice(5, 7) === x.fin.slice(5, 7)) || [])[2])}">${(() => { const b = hist.find((r) => r[0].slice(5, 7) === x.fin.slice(5, 7) && r[0] < x.fin); return b && b[2] > 0 ? fPct((x.eps / b[2] - 1) * 100, 0) + " a/a" : ""; })()}</div>` : ""}</td>
         <td class="r num sub">${isNum(x.bajo) && isNum(x.alto) ? `${fEps(x.bajo)} a ${fEps(x.alto)}` : "—"}</td><td class="r">${rev(x)}</td></tr>`).join("")}
@@ -726,6 +726,171 @@ async function loadEps(t) {
 }
 
 function closeSheet() { $("#sheet").hidden = true; $("#sheet").innerHTML = ""; document.body.style.overflow = ""; }
+
+// ── Glosario: explicación al pasar el mouse o tocar cualquier título o medida ──
+// Las claves se buscan al inicio del texto de cada etiqueta (sin distinguir mayúsculas).
+const GLOSARIO = [
+  // Ficha · tu posición
+  ["Tu posición", "Tu posición", "Lo que tienes hoy de este título en IBKR: cantidad, costo, valor actual y ganancia o pérdida sin vender."],
+  ["Cantidad", "Cantidad", "Número de acciones (o unidades) que tienes en IBKR."],
+  ["Cant.", "Cantidad", "Número de acciones de la operación."],
+  ["Costo promedio", "Costo promedio", "Precio promedio que pagaste por cada acción, ponderando todas tus compras."],
+  ["Valor · peso", "Valor · peso", "Valor: cantidad × precio de ahora. Peso: qué % de tu cartera total (incluida la caja) representa este título."],
+  ["No realizado", "Ganancia/pérdida no realizada", "Lo que ganarías o perderías si vendieras hoy: (precio de ahora − costo promedio) × cantidad. No es plata en el bolsillo hasta que vendes."],
+  ["P&L realizado", "P&L realizado", "Ganancia o pérdida de las ventas ya cerradas (método FIFO: se vende primero lo que se compró primero)."],
+  ["Pilar 4", "Semáforo Pilar 4", "Disciplina de compra por título según tu historial en IBKR. Regla A: muchas compras seguidas sin cerrar en ganancia. Regla B: racha de cierres seguidos en pérdida. Regla C: la última compra fue más grande que la anterior con la posición en rojo. ROJO = se cumple al menos una regla: pausa antes de comprar más. VERDE = sin alertas."],
+  ["Semáforo Pilar 4", "Semáforo Pilar 4", "Disciplina de compra por título según tu historial en IBKR (reglas A, B y C de frecuencia y tamaño de compras). ROJO = pausa antes de comprar más."],
+  // Niveles por volumen
+  ["Niveles por volumen", "Niveles por volumen", "Pisos y techos calculados donde más volumen se ha negociado (perfil de volumen). Son zonas donde el precio suele frenar: el piso como soporte (compra) y el techo como resistencia (venta). Se calculan en 3 horizontes de tiempo."],
+  ["Horizonte", "Horizonte", "Ventana de tiempo usada para calcular piso y techo: táctico (6 meses), estructural (2 años) e histórico (5 años)."],
+  ["Táctico 6m", "Horizonte táctico (6 meses)", "Piso y techo con el volumen de los últimos 6 meses. Sirve para entradas y salidas de corto plazo."],
+  ["Estructural 2a", "Horizonte estructural (2 años)", "Piso y techo con el volumen de los últimos 2 años. Marca la tendencia de mediano plazo."],
+  ["Histórico 5a", "Horizonte histórico (5 años)", "Piso y techo con el volumen de los últimos 5 años. Las zonas de largo plazo más fuertes."],
+  ["Piso", "Piso", "Precio con mucho volumen negociado por debajo del precio actual: zona de soporte donde suelen aparecer compradores. Referencia para comprar."],
+  ["Techo", "Techo", "Precio con mucho volumen negociado por encima del precio actual: zona de resistencia donde suelen aparecer vendedores. Referencia para vender o tomar ganancias."],
+  ["R:B", "Riesgo : Beneficio", "Cuánto podrías ganar hasta el techo por cada peso que arriesgas hasta el piso. 2x = el beneficio potencial es el doble del riesgo. 'bajo piso' = el precio ya rompió el piso; 'en piso' = está tan cerca del piso que el cálculo no es confiable."],
+  ["Rango est.", "Rango de estimados", "EPS más bajo y más alto entre los analistas que cubren el título. Un rango amplio = mucha incertidumbre."],
+  ["Rango", "Posición en el rango", "Dónde está el precio entre el piso (0%) y el techo (100%). Verde: cerca del piso con R:B > 2. Rojo: arriba del 65% del rango o R:B < 1. Amarillo: en medio."],
+  ["Califica", "Veredicto: Califica", "La relación riesgo/beneficio y la posición del precio frente a sus pisos y techos son favorables para comprar o sumar."],
+  ["Vigilar", "Veredicto: Vigilar", "Condiciones mixtas: no es zona clara de compra ni de venta. Seguirlo de cerca."],
+  ["No califica", "Veredicto: No califica", "Riesgo/beneficio desfavorable (precio lejos del piso o cerca del techo). No es momento de comprar."],
+  ["Defensa táctica", "Defensa táctica", "Precio de stop de corto plazo. Si el precio cierra por debajo, la tesis de corto plazo se rompió (Art. V de tu Constitución DCLA)."],
+  ["Defensa estructural", "Defensa estructural", "Precio de stop de mediano plazo. Romperla indica que la tendencia de fondo cambió (Art. V de tu Constitución DCLA)."],
+  ["Volatilidad anual", "Volatilidad anual", "Cuánto se mueve el precio en un año típico (desviación estándar anualizada). 92% = movimientos muy grandes: posiciones más pequeñas y revisiones más frecuentes."],
+  ["Revisión sugerida", "Revisión sugerida", "Cada cuánto revisar el título según su volatilidad: más volátil, más seguido."],
+  ["Entrada por tramos", "Entrada por tramos", "Plan para comprar en partes en cada piso (con el % del monto en cada uno), en vez de todo de una vez."],
+  ["Salida por tramos", "Salida por tramos", "Plan para vender en partes en cada techo (con el % de la posición en cada uno)."],
+  // Valuación
+  ["Valuación y analistas", "Valuación y analistas", "Qué tan caro está el título frente a sus utilidades, la calidad del negocio y qué opinan los analistas (Alpha Vantage, se refresca cada pocos días)."],
+  ["Calidad", "Calidad del negocio (lente Buffett)", "Suma señales: ROE ≥ 15% y margen operativo ≥ 15% suman; ROE o margen < 5% restan; crecimiento de ingresos y de EPS positivo suma, negativo resta. Alta / Media / Baja. Necesita al menos 2 señales con dato."],
+  ["P/E futuro", "P/E futuro", "Precio ÷ EPS esperado por los analistas para los próximos 12 meses. Más bajo que el P/E actual = se espera que las utilidades crezcan."],
+  ["P/E proyectado", "P/E proyectado", "Precio de ahora ÷ EPS de consenso del próximo año fiscal."],
+  ["P/E", "P/E (precio / utilidad)", "Cuántos años de utilidades actuales pagas por la acción. Más alto = más caro (o más crecimiento esperado). 'n/a' = la empresa tiene pérdidas."],
+  ["PEG", "PEG", "P/E ÷ crecimiento esperado de utilidades. Cerca de 1 = precio justo para su crecimiento; menos de 1 = barato para lo que crece; más de 2 = caro."],
+  ["ROE", "ROE (rentabilidad del patrimonio)", "Utilidad neta ÷ patrimonio, últimos 12 meses. Cuánto gana la empresa con el dinero de los accionistas. Más de 15% es bueno."],
+  ["Margen operativo", "Margen operativo", "Utilidad operativa ÷ ingresos. Cuánto le queda del negocio principal por cada dólar vendido. Negativo = pierde plata operando."],
+  ["Ingresos a/a", "Ingresos a/a", "Crecimiento de las ventas frente al mismo trimestre del año anterior."],
+  ["Consenso", "Consenso de analistas", "Recomendación promedio de los analistas que cubren el título (Compra fuerte → Venta fuerte) y cuántos son."],
+  ["Precio objetivo", "Precio objetivo", "Precio promedio que esperan los analistas en 12 meses. El % es el potencial frente al precio de ahora."],
+  // Earnings / EPS
+  ["Earnings", "Earnings", "Fecha del próximo reporte trimestral de resultados y lo que espera el mercado."],
+  ["Próximo", "Próximo reporte", "Fecha del próximo reporte trimestral de resultados."],
+  ["EPS estimado", "EPS estimado", "Utilidad por acción que esperan los analistas para el próximo reporte."],
+  ["Revisiones 30d", "Revisiones 30 días", "Si los analistas subieron o bajaron su estimado en el último mes. Revisiones al alza suelen anticipar buenos resultados."],
+  ["Siguiente call", "Siguiente call", "Fecha de la conferencia con inversionistas del siguiente reporte."],
+  ["EPS por trimestre", "EPS (utilidad por acción)", "Utilidad ajustada de cada trimestre dividida entre el número de acciones. Es el dato que compara el mercado contra lo esperado. Barras llenas: real; punteadas: proyección de consenso; raya: lo que se esperaba."],
+  ["Superó", "Le ganó al estimado", "En cuántos de los últimos trimestres el EPS real fue igual o mayor al que esperaban los analistas. 6 de 8 o más es consistente."],
+  ["Último trimestre", "Último trimestre", "EPS del último reporte y su sorpresa: cuánto quedó por encima (+) o por debajo (−) de lo esperado."],
+  ["Crecimiento a/a", "Crecimiento a/a", "EPS del último trimestre frente al mismo trimestre del año anterior."],
+  ["EPS últimos 12m", "EPS últimos 12 meses", "Suma del EPS de los últimos 4 trimestres. El P/E al lado usa el precio de ahora."],
+  ["Proyección", "Proyección", "Estimados de consenso para los próximos trimestres y años fiscales: promedio, rango (más bajo – más alto), número de analistas y revisiones en 30 días (↑ al alza, ↓ a la baja)."],
+  ["Sorpresa", "Sorpresa", "Diferencia % entre el EPS real y el estimado."],
+  ["Revisión", "Revisión 30 días", "Cuánto cambió el estimado promedio en los últimos 30 días."],
+  ["Estimado", "Estimado", "EPS que esperaban los analistas antes del reporte."],
+  ["Real", "Real", "EPS reportado por la empresa."],
+  ["Trimestre", "Trimestre", "Trimestre fiscal, nombrado por su mes de cierre."],
+  // FCF
+  ["Flujo de caja libre", "Flujo de caja libre (FCF) por acción", "Caja que genera el negocio después de invertir en activos fijos: flujo de caja operativo − capex, dividido entre las acciones. Es más difícil de maquillar que la utilidad contable."],
+  ["P/FCF", "Precio / flujo de caja libre", "Cuántas veces pagas el FCF anual por acción. Verde ≤ 20, amarillo ≤ 40, rojo más arriba."],
+  ["FCF/acción 12m", "FCF por acción 12 meses", "Suma del FCF por acción de los últimos 4 trimestres."],
+  ["FCF/acción", "FCF por acción", "Flujo de caja libre del trimestre ÷ acciones en circulación."],
+  ["Crecimiento 12m a/a", "Crecimiento 12m a/a", "FCF de los últimos 12 meses frente a los 12 meses anteriores."],
+  ["Rendimiento FCF", "Rendimiento FCF", "FCF anual por acción ÷ precio. Es como la 'tasa de interés' que te paga el negocio en caja: 5% o más es atractivo."],
+  ["Conversión FCF", "Conversión FCF / EPS", "Qué parte de la utilidad (EPS) se convierte en caja libre. Cerca de 100% o más = utilidades de buena calidad."],
+  ["12m", "12 meses", "Acumulado de los últimos 4 trimestres hasta esa fila."],
+  ["a/a", "Año contra año", "Cambio frente al mismo periodo del año anterior."],
+  ["est.", "Estimado (no es consenso)", "FCF proyectado = EPS de consenso × conversión FCF/EPS de los últimos 12 meses."],
+  ["Fuerza relativa", "Fuerza relativa", "Si el título le está ganando o perdiendo a los índices (S&P 500, Nasdaq) y a Bitcoin en el mismo periodo."],
+  // Resumen / cartera
+  ["Valor de la cartera", "Valor de la cartera", "Suma de tus posiciones a precio de ahora más la caja en IBKR. Debajo, su equivalente en pesos con el dólar del momento."],
+  ["Hoy", "Hoy", "Cuánto ha ganado o perdido tu cartera (o el título) desde el cierre de ayer."],
+  ["Liquidez", "Liquidez", "Caja disponible como % del valor total de la cartera."],
+  ["DCLA", "Constitución DCLA", "Tus reglas de inversión: Art. I (sin acciones bajo $5, cripto ni margen), Art. III (topes de concentración por título y bloque) y Art. V (respetar las defensas). 'ok' = sin alertas."],
+  ["Constitución DCLA", "Constitución DCLA", "Tus reglas de inversión revisadas en vivo con los precios de ahora."],
+  ["Art. I", "Art. I", "Prohibiciones: acciones bajo $5, cripto o sus proxies, y uso de margen."],
+  ["Art. III", "Art. III", "Topes de concentración: ningún título ni bloque de riesgo puede pasar el % máximo de la cartera."],
+  ["Art. V", "Art. V", "Si el precio rompe la defensa táctica o estructural, se revisa o se sale de la posición."],
+  ["Concentración por bloque", "Concentración por bloque de riesgo", "Títulos que tienden a moverse juntos (p. ej. cripto: MSTR, IREN, BTC) sumados. La raya gris es el tope permitido; rojo = lo pasaste."],
+  ["Concentración por sector", "Concentración por sector", "% de la cartera en cada sector frente al tope."],
+  ["Caja", "Caja", "Efectivo disponible en IBKR."],
+  ["Invertido", "Invertido", "Valor de mercado de tus posiciones, sin la caja."],
+  ["Apalancamiento", "Apalancamiento", "Cuánto de tu cartera está financiado con préstamo del bróker (margen). 0% = solo plata propia."],
+  ["Interés margen", "Interés de margen", "Intereses que IBKR te cobró este mes por usar margen."],
+  ["Top 5", "Top 5 con el precio de ahora", "Comprar: los títulos más cerca de su piso con mejor riesgo/beneficio. Vender: los más cerca de su techo."],
+  ["Alertas en vivo", "Alertas en vivo", "Títulos que cruzaron o están muy cerca de un piso o techo con el precio de ahora."],
+  ["Earnings próximos", "Earnings próximos", "Títulos del watchlist que reportan resultados en las próximas 3 semanas."],
+  // Macro
+  ["Mercado ahora", "Mercado ahora", "Indicadores del mercado con precio en vivo."],
+  ["S&P 500", "S&P 500 (SPY)", "Las 500 empresas más grandes de EE. UU. Es la referencia del mercado: si tu cartera le gana, vas mejor que el promedio."],
+  ["Nasdaq 100", "Nasdaq 100 (QQQ)", "Las 100 tecnológicas y de crecimiento más grandes del Nasdaq. Tu cartera, cargada en IA y chips, suele moverse parecido."],
+  ["Bitcoin", "Bitcoin", "Precio en vivo. Mueve directamente a MSTR, IREN y otros títulos ligados a cripto."],
+  ["VIX", "VIX", "Índice del miedo: volatilidad esperada del S&P 500. Menos de 15 = calma; más de 25 = nervios; más de 30 = pánico."],
+  ["Bono 10 años", "Bono del Tesoro a 10 años", "Tasa de interés de largo plazo en EE. UU. Si sube, presiona a la baja las acciones de crecimiento."],
+  ["Tesoro 10 años", "Bono del Tesoro a 10 años", "Tasa de interés de largo plazo en EE. UU. y su cambio en puntos básicos (pb)."],
+  ["Índice dólar", "Índice dólar (DXY)", "Fuerza del dólar frente a las principales monedas. Un dólar fuerte suele pesar sobre acciones y cripto."],
+  ["Dólar (DXY)", "Índice dólar (DXY) 1 mes", "Cambio de la fuerza del dólar en el último mes."],
+  ["Dólar (USD/COP)", "Dólar en Colombia", "Pesos por dólar en vivo. Si sube, tu cartera vale más en pesos aunque no se mueva en dólares."],
+  ["Régimen macro", "Régimen macro", "Lectura del entorno: risk-on (favorable para riesgo), risk-off (defensivo) o neutral, combinando tasas, dólar, inflación y tendencia del Nasdaq."],
+  ["Fed funds", "Tasa de la Fed", "Tasa de interés de referencia de la Reserva Federal."],
+  ["Inflación", "Inflación (CPI a/a)", "Variación de los precios al consumidor en EE. UU. en el último año."],
+  ["Tasa real", "Tasa real", "Bono a 10 años menos inflación. Positiva y alta = el dinero 'seguro' rinde bien y compite con las acciones."],
+  ["Nasdaq vs media 200", "Nasdaq vs media de 200 días", "Qué tan arriba (+) o abajo (−) está el Nasdaq de su promedio de 200 días. Debajo = tendencia bajista."],
+];
+const _G = GLOSARIO.map(([k, t, d]) => [k.toLowerCase(), t, d]).sort((a, b) => b[0].length - a[0].length);
+function glosa(txt) {
+  const s = String(txt || "").replace(/\s+/g, " ").trim().toLowerCase().replace(/:$/, "");
+  if (!s || s.length > 60) return null;
+  if (/\bdcla\b/.test(s) && !s.startsWith("constitución")) return _G.find((g) => g[0] === "dcla").slice(1);
+  for (const [k, t, d] of _G) if (s === k || s.startsWith(k + " ") || s.startsWith(k + "·") || (k.length > 3 && s.startsWith(k))) return [t, d];
+  return null;
+}
+const TIP_SEL = ".metric .k, .kv .k, .label, th, h2, .card strong, .pill, td:first-child, .sheet .sub strong";
+function annotateTips(root) {
+  root.querySelectorAll(TIP_SEL).forEach((el) => {
+    if (el.dataset.tipDone) return;
+    el.dataset.tipDone = "1";
+    if (el.closest("[data-t]") || el.closest(".tabs")) return;       // filas que abren la ficha: no robarles el toque
+    const txt = el.childNodes.length && el.childNodes[0].nodeType === 3 ? el.childNodes[0].textContent : el.textContent;
+    const g = glosa(txt) || glosa(el.textContent);
+    if (!g) return;
+    el.dataset.tip = g[0]; el.dataset.tipD = g[1];
+    el.classList.add("tip"); el.tabIndex = 0;
+  });
+}
+const tipBox = document.createElement("div");
+tipBox.id = "tip"; tipBox.setAttribute("role", "tooltip"); tipBox.hidden = true;
+document.body.appendChild(tipBox);
+let tipFor = null, tipTimer = null, tipAt = 0;
+function showTip(el) {
+  if (tipFor !== el) tipAt = Date.now();
+  tipFor = el;
+  tipBox.innerHTML = `<strong>${esc(el.dataset.tip)}</strong><div>${esc(el.dataset.tipD)}</div>`;
+  tipBox.hidden = false;
+  const r = el.getBoundingClientRect(), w = Math.min(300, window.innerWidth - 24);
+  tipBox.style.maxWidth = w + "px";
+  const bh = tipBox.offsetHeight, bw = tipBox.offsetWidth;
+  let left = Math.max(12, Math.min(r.left, window.innerWidth - bw - 12));
+  let top = r.bottom + 8;
+  if (top + bh > window.innerHeight - 12) top = Math.max(12, r.top - bh - 8);
+  tipBox.style.left = left + "px"; tipBox.style.top = top + "px";
+}
+function hideTip() { tipFor = null; tipBox.hidden = true; clearTimeout(tipTimer); }
+const canHover = window.matchMedia("(hover: hover)").matches;
+if (canHover) {
+  document.addEventListener("mouseover", (e) => { const el = e.target.closest?.("[data-tip]"); if (!el || el === tipFor) return; clearTimeout(tipTimer); tipTimer = setTimeout(() => showTip(el), 250); });
+  document.addEventListener("mouseout", (e) => { const el = e.target.closest?.("[data-tip]"); if (el && !el.contains(e.relatedTarget)) hideTip(); });
+}
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-tip]");
+  if (el) { e.preventDefault(); e.stopPropagation(); if (tipFor === el && !tipBox.hidden && Date.now() - tipAt > 400) hideTip(); else showTip(el); return; }
+  if (!e.target.closest("#tip")) hideTip();
+}, true);
+document.addEventListener("focusin", (e) => { if (e.target.matches?.("[data-tip]")) showTip(e.target); });
+document.addEventListener("focusout", (e) => { if (e.target.matches?.("[data-tip]")) hideTip(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTip(); });
+window.addEventListener("scroll", hideTip, true);
+window.addEventListener("resize", hideTip);
+new MutationObserver(() => annotateTips(document.body)).observe(document.body, { childList: true, subtree: true });
 
 // ── Datos y sesión ────────────────────────────────────────────────────────
 async function loadSnapshot() {
