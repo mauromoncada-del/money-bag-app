@@ -185,6 +185,10 @@ input:focus{outline:2px solid var(--brass);outline-offset:1px}
 .pill.tip{text-decoration:none}
 #tip{position:fixed;z-index:60;background:var(--ink);color:var(--bg);border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.45;box-shadow:0 8px 24px rgba(0,0,0,.25);text-transform:none;letter-spacing:0;font-weight:400}
 #tip strong{display:block;font-size:13px;margin-bottom:3px}
+[data-t]{cursor:pointer;-webkit-tap-highlight-color:transparent}
+tr[data-t]:active,tr[data-t]:hover{background:var(--sunk)}
+.tk-link{border:0;background:none;padding:2px 0;font:inherit;font-weight:700;font-size:15px;color:var(--brass);display:inline-flex;align-items:center;gap:2px;cursor:pointer}
+.tk-link:focus-visible{outline:2px solid var(--brass);outline-offset:2px;border-radius:4px}
 .masked .amt{filter:blur(7px);user-select:none}
 </style>
 </head>

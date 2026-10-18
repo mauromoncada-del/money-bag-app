@@ -411,7 +411,7 @@ function renderCartera() {
   const C = S.C;
   const pnlT = C.pnl_total || {};
   const posRows = P.rows.map((r) => `<tr data-t="${esc(r.sym)}" style="cursor:pointer">
-      <td><strong>${esc(disp(r.sym))}</strong>${r.sem ? ` <span class="pill ${semClass(r.sem.estado)}" title="${esc((r.sem.razones || []).join(" · "))}">${esc(r.sem.estado)}</span>` : ""}<div class="sub num"><span class="amt">${nf(r.qty % 1 ? 2 : 0).format(r.qty)}</span> × ${fPrice(r.px)}</div></td>
+      <td><button type="button" class="tk-link" data-t="${esc(r.sym)}" aria-label="Ver análisis completo de ${esc(disp(r.sym))}">${esc(disp(r.sym))}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>${r.sem ? ` <span class="pill ${semClass(r.sem.estado)}" title="${esc((r.sem.razones || []).join(" · "))}">${esc(r.sem.estado)}</span>` : ""}<div class="sub num"><span class="amt">${nf(r.qty % 1 ? 2 : 0).format(r.qty)}</span> × ${fPrice(r.px)}</div></td>
       <td class="r num">${fUsd(r.value)}<div class="sub">${fPct(r.peso, 1, false)}</div></td>
       <td class="r num ${cls(r.dayPnl)}">${fUsd(r.dayPnl, { sign: true })}</td>
       <td class="r num ${cls(r.un)}">${fUsd(r.un, { sign: true })}<div class="sub ${cls(r.unPct)}">${fPct(r.unPct, 1)}</div></td></tr>`).join("");
