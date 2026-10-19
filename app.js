@@ -18,8 +18,8 @@ const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
 
-const S = { M: null, C: null, Q: {}, E: {}, qAt: null, loadingQ: false, view: "resumen", sector: "Todos", sort: "sector", wmode: "lista", masked: false };
-try { S.masked = localStorage.getItem("mb_masked") === "1"; S.view = localStorage.getItem("mb_view") || "resumen"; S.wmode = localStorage.getItem("mb_wmode") || "lista"; } catch (_) {}
+const S = { M: null, C: null, Q: {}, E: {}, qAt: null, loadingQ: false, view: "resumen", sector: "Todos", sort: "sector", wmode: "lista", masked: true };   // los montos siempre arrancan ocultos
+try { localStorage.removeItem("mb_masked"); S.view = localStorage.getItem("mb_view") || "resumen"; S.wmode = localStorage.getItem("mb_wmode") || "lista"; } catch (_) {}
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -1109,12 +1109,18 @@ document.addEventListener("keydown", (ev) => {
   if ((ev.key === "Enter" || ev.key === " ") && ev.target.matches(".r[data-t]")) { ev.preventDefault(); openSheet(ev.target.dataset.t); }
 });
 $("#refresh-btn").addEventListener("click", () => loadQuotes());
-$("#mask-btn").addEventListener("click", () => {
-  S.masked = !S.masked; try { localStorage.setItem("mb_masked", S.masked ? "1" : "0"); } catch (_) {}
-  $("#mask-btn").setAttribute("aria-label", S.masked ? "Mostrar montos" : "Ocultar montos"); render();
-});
+function setMasked(v) {
+  S.masked = v;
+  document.body.classList.toggle("masked", v);
+  const b = $("#mask-btn"), lbl = v ? "Mostrar montos" : "Ocultar montos";
+  b.setAttribute("aria-label", lbl); b.title = lbl; b.setAttribute("aria-pressed", String(!v));
+}
+setMasked(true);
+// Los montos solo se muestran cuando tú lo pides; no se recuerda entre aperturas.
+$("#mask-btn").addEventListener("click", () => { setMasked(!S.masked); render(); });
 // Cada vez que vuelves a la app (estaba en segundo plano) trae precios nuevos.
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && !S.masked) setMasked(true);   // al salir de la app se vuelven a ocultar
   if (document.visibilityState === "visible" && S.M && (!S.qAt || Date.now() - S.qAt > 30000)) loadQuotes();
 });
 
