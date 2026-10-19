@@ -67,7 +67,7 @@ a{color:inherit}
 /* Navegación inferior */
 .tabs{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);
   padding-bottom:env(safe-area-inset-bottom,0px)}
-.tabs-in{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}
+.tabs-in{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
 .tab{border:0;background:none;padding:10px 4px 9px;display:flex;flex-direction:column;align-items:center;gap:3px;
   font-size:11.5px;font-weight:600;color:var(--muted);cursor:pointer;letter-spacing:.01em}
 .tab svg{width:21px;height:21px}
@@ -230,6 +230,7 @@ tr[data-t]:active,tr[data-t]:hover{background:var(--sunk)}
     <section class="view" id="v-resumen"></section>
     <section class="view" id="v-watch" hidden></section>
     <section class="view" id="v-cartera" hidden></section>
+    <section class="view" id="v-revision" hidden></section>
     <section class="view" id="v-macro" hidden></section>
     <details class="card" id="acceso" style="margin-top:14px"><summary style="cursor:pointer;font-weight:600">Acceso</summary>
       <form id="pw-form" style="display:grid;gap:8px;margin-top:10px">
@@ -246,6 +247,7 @@ tr[data-t]:active,tr[data-t]:hover{background:var(--sunk)}
     <button class="tab" role="tab" data-v="resumen" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Resumen</button>
     <button class="tab" role="tab" data-v="watch" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Watchlist</button>
     <button class="tab" role="tab" data-v="cartera" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 4h6l-1.5 3h-3z"/><path d="M10.5 7C6 9 4 13 4 16a4 4 0 0 0 4 4h8a4 4 0 0 0 4-4c0-3-2-7-6.5-9"/><path d="M12 11v6M10 13h3a1 1 0 0 1 0 2h-2a1 1 0 0 0 0 2h3"/></svg>Cartera</button>
+    <button class="tab" role="tab" data-v="revision" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l2 2 4-4"/><path d="M5 4h14v16H5z"/></svg>Revisión</button>
     <button class="tab" role="tab" data-v="macro" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>Macro</button>
   </div></nav>
 </div>

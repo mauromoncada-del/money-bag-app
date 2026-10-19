@@ -257,8 +257,8 @@ function render() {
   if (S.qErr) msgs.push(S.qErr);
   if (ageH > 30) msgs.push(`El cálculo diario es del ${fDate(S.M.generado)} (hace ${Math.round(ageH / 24)} días). Revisa el proceso en GitHub.`);
   ban.hidden = !msgs.length; ban.textContent = msgs.join(" ");
-  renderResumen(); renderWatch(); renderCartera(); renderMacro();
-  for (const v of ["resumen", "watch", "cartera", "macro"]) $("#v-" + v).hidden = S.view !== v;
+  renderResumen(); renderWatch(); renderCartera(); renderRevision(); renderMacro();
+  for (const v of ["resumen", "watch", "cartera", "revision", "macro"]) $("#v-" + v).hidden = S.view !== v;
   document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.v === S.view)));
 }
 
@@ -465,6 +465,82 @@ function renderCartera() {
       ${trades.map((t) => `<tr><td class="num">${esc(String(t.date || "").slice(0, 10))}</td><td><strong>${esc(t.symbol)}</strong></td><td><span class="pill ${t.side === "BUY" ? "verde" : "rojo"}">${t.side === "BUY" ? "compra" : "venta"}</span></td><td class="r num"><span class="amt">${nf(2).format(t.qty || 0)}</span></td><td class="r num">${fPrice(t.price)}</td></tr>`).join("")}
     </tbody></table></div>` : ""}
     <div class="foot">Posiciones y caja del Flex Query de IBKR (${fDate(C.generado)}); valores recalculados con precios de ahora.</div>`;
+}
+
+// ── Revisión: lo que tus reglas marcan hoy (lectura de reglas, no recomendación) ──
+function renderRevision() {
+  const el = $("#v-revision");
+  const P = portfolio();
+  if (!P) { el.innerHTML = `<div class="card empty">La revisión usa los datos de tu cuenta IBKR; aparecen después del cálculo diario.</div>`; return; }
+  const sem = S.C?.semaforo || {};
+  const T = S.M.tickers || {};
+  const rowOf = Object.fromEntries(P.rows.map((r) => [r.sym, r]));
+  const link = (t) => `<button type="button" class="tk-link" data-t="${esc(t)}">${esc(disp(t))}<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>`;
+  const semPill = (t) => sem[t] ? `<span class="pill ${semClass(sem[t].estado)}">${esc(sem[t].estado)}</span>` : "";
+  const items = [];   // [nivel 0=rojo 1=amarillo 2=info, html]
+  const sec = (titulo, cuerpo, nota) => cuerpo ? `<h2>${titulo}</h2><div class="card">${cuerpo}${nota ? `<div class="sub" style="margin-top:8px">${nota}</div>` : ""}</div>` : "";
+  const tbl = (head, rows) => rows.length ? `<div class="tbl-wrap"><table><thead><tr>${head.map((h, i) => `<th${i ? ' class="r"' : ""}>${h}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : "";
+
+  // 1. Concentración (Art. III)
+  const sobre = P.dcla.art3.tickers.map(([t, peso]) => {
+    const r = rowOf[t], exceso = isNum(peso) ? (peso - P.topeT) / 100 * P.nav : null;
+    const acc = r && isNum(r.px) && r.px > 0 && isNum(exceso) ? exceso / r.px : null;
+    return `<tr><td>${link(t)} ${semPill(t)}</td><td class="r num down">${fPct(peso, 1, false)}</td><td class="r num"><span class="amt">${fUsd(exceso)}</span><div class="sub">≈ <span class="amt">${isNum(acc) ? nf(acc < 10 ? 1 : 0).format(acc) : "—"}</span> acc.</div></td></tr>`;
+  });
+  const bloq = P.dcla.art3.bloques.map(([b, pct]) => `<li><span class="ic">▲</span><span>Bloque <strong>${esc(b)}</strong> en ${fPct(pct, 1, false)} (tope ${P.tope}%)</span></li>`).join("");
+  // 2. Margen y liquidez (Art. I)
+  const a1 = P.dcla.art1;
+  const margen = [];
+  if (a1.margen_hoy || P.caja < 0) margen.push(`Caja en <strong class="num"><span class="amt">${fUsd(P.caja)}</span></strong>: estás usando margen. Liquidez ${fPct(P.liquidezPct, 1, false)} vs. objetivo ${S.M.config?.objetivo_liquidez_pct ?? 15}%.`);
+  else if (isNum(P.liquidezPct) && P.liquidezPct < (S.M.config?.objetivo_liquidez_pct ?? 15)) margen.push(`Liquidez ${fPct(P.liquidezPct, 1, false)}, por debajo de tu objetivo de ${S.M.config?.objetivo_liquidez_pct ?? 15}%.`);
+  if (a1.sub5.length) margen.push(`Acciones bajo $5: ${a1.sub5.map(link).join(" ")}`);
+  if (a1.cripto.length) margen.push(`Cripto o proxies: ${a1.cripto.map(link).join(" ")}`);
+  // 3. Pilar 4 en rojo
+  const rojos = P.rows.filter((r) => sem[r.sym]?.estado?.toUpperCase() === "ROJO")
+    .map((r) => `<li><span class="ic" style="color:var(--down)">●</span><span>${link(r.sym)} <span class="sub">${fPct(r.peso, 1, false)} · ${esc((sem[r.sym].razones || []).map((x) => x.replace(/\s*\(en esta campana\)/, "")).join(" · "))}</span></span></li>`).join("");
+  // 4. Defensas (Art. V): rotas o a menos de 3%
+  const def = [];
+  for (const r of P.rows) {
+    const nt = T[r.sym]?.niveles || {}, px = livePrice(r.sym) ?? r.px;
+    for (const [k, nom] of [["defensa_tactica", "táctica"], ["defensa_estructural", "estructural"]]) {
+      const d = nt[k];
+      if (!isNum(d) || !isNum(px)) continue;
+      const dist = (px / d - 1) * 100;
+      if (dist < 3) def.push({ t: r.sym, nom, d, px, dist, peso: r.peso });
+      if (dist < 3) break;   // basta con la más cercana
+    }
+  }
+  def.sort((a, b) => a.dist - b.dist);
+  const defRows = def.map((x) => `<tr><td>${link(x.t)}<div class="sub">defensa ${x.nom} · ${fPct(x.peso, 1, false)} de la cartera</div></td><td class="r num">${fPrice(x.px)}</td><td class="r num">${fPrice(x.d)}</td><td class="r num ${x.dist < 0 ? "down" : ""}">${x.dist < 0 ? "rota " + fPct(x.dist, 1) : fPct(x.dist, 1, false)}</td></tr>`);
+  // 5. Earnings próximos 7 días
+  const evMap = {};
+  for (const e of S.M.proximos_eventos || []) if (e.ticker && e.fecha) evMap[e.ticker] = e;
+  for (const [t, info] of Object.entries(T)) if (info?.earnings?.fecha && !evMap[t]) evMap[t] = { ticker: t, fecha: info.earnings.fecha, eps_estimado: info.earnings.eps_estimado };
+  const evs = Object.values(evMap).map((e) => ({ ...e, d: daysUntil(e.fecha) })).filter((e) => e.d !== null && e.d >= 0 && e.d <= 7).sort((a, b) => a.d - b.d);
+  const evRows = evs.map((e) => { const r = rowOf[e.ticker];
+    return `<tr><td>${link(e.ticker)} ${semPill(e.ticker)}${r ? `<div class="sub">${fPct(r.peso, 1, false)} de la cartera</div>` : `<div class="sub">no la tienes</div>`}</td><td class="r">${e.d === 0 ? "hoy" : e.d === 1 ? "mañana" : fDate(e.fecha)}</td><td class="r num">${isNum(e.eps_estimado) ? nf(2).format(e.eps_estimado) : "—"}</td></tr>`; });
+  // 6. Pasan todos tus filtros
+  const pasan = Object.entries(T).filter(([t, info]) => {
+    if (info?.tipo === "cripto" || t.endsWith("-USD")) return false;
+    const f = info?.fundamentales || {}, ver = info?.niveles?.veredicto, st = sem[t]?.estado?.toUpperCase();
+    const pesoOk = !rowOf[t] || rowOf[t].peso < P.topeT;
+    return ver === "Califica" && f.calidad?.label === "Alta" && /compra/i.test(f.consenso || "") && st !== "ROJO" && st !== "AMARILLO" && pesoOk;
+  }).map(([t, info]) => { const f = info.fundamentales || {}, px = livePrice(t), up = isNum(f.precio_objetivo) && isNum(px) ? (f.precio_objetivo / px - 1) * 100 : null;
+    return `<tr><td>${link(t)}<div class="sub">${rowOf[t] ? fPct(rowOf[t].peso, 1, false) + " de la cartera" : "no la tienes"}</div></td><td class="r">${esc(f.consenso)}</td><td class="r num ${cls(up)}">${fPct(up, 0)}</td></tr>`; });
+
+  const nAlert = sobre.length + P.dcla.art3.bloques.length + (margen.length ? 1 : 0) + (rojos ? P.rows.filter((r) => sem[r.sym]?.estado?.toUpperCase() === "ROJO").length : 0) + def.filter((x) => x.dist < 0).length;
+  el.innerHTML = `
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><strong>Revisión de hoy</strong>
+      <span class="pill ${P.dcla.viol ? "rojo" : "verde"}">${P.dcla.viol ? P.dcla.viol + " alertas DCLA" : "DCLA ok"}</span></div>
+      <div class="sub" style="margin-top:6px">Lo que marcan tus reglas (Constitución DCLA y Pilar 4) con los precios de ahora. Es una lectura de tus reglas, no una recomendación de compra o venta.</div></div>
+    ${sec(`Sobre tu tope de ${P.topeT}% por título`, tbl(["Título", "Peso", "Exceso"], sobre) + (bloq ? `<ul class="list" style="margin-top:8px">${bloq}</ul>` : ""), sobre.length ? `"Exceso" es lo que habría que reducir para volver a ${P.topeT}% (Art. III).` : "")}
+    ${sec("Margen, liquidez y Art. I", margen.length ? `<ul class="list">${margen.map((m) => `<li><span class="ic">·</span><span>${m}</span></li>`).join("")}</ul>` : "")}
+    ${sec("Pilar 4 en rojo · pausa antes de sumar", rojos ? `<ul class="list">${rojos}</ul>` : "", "Tu regla no dice vender: dice no promediar hacia abajo hasta que el semáforo cambie.")}
+    ${sec("Defensas rotas o a menos de 3%", tbl(["Título", "Precio", "Defensa", "Distancia"], defRows), def.length ? "Si cierra por debajo de su defensa, tu Art. V dice revisar o salir." : "")}
+    ${sec("Earnings en los próximos 7 días", tbl(["Título", "Fecha", "EPS est."], evRows), evs.length ? "Antes de un reporte la volatilidad sube: revisa peso y defensa de lo que tienes." : "")}
+    ${sec("Pasan todos tus filtros", tbl(["Título", "Consenso", "Potencial"], pasan), pasan.length ? `Veredicto Califica + calidad Alta + consenso de compra + Pilar 4 en verde + peso bajo ${P.topeT}%.${P.caja < 0 ? " Con margen en uso, tus reglas no dejan caja para sumar sin liberar capital antes." : ""}` : "")}
+    ${!sobre.length && !margen.length && !rojos && !def.length && !evs.length ? `<div class="card empty">Hoy tus reglas no marcan nada. 👌</div>` : ""}
+    <div class="foot">Se recalcula cada vez que abres la app.</div>`;
 }
 
 function renderMacro() {
@@ -820,6 +896,13 @@ const GLOSARIO = [
   ["Alertas en vivo", "Alertas en vivo", "Títulos que cruzaron o están muy cerca de un piso o techo con el precio de ahora."],
   ["Earnings próximos", "Earnings próximos", "Títulos del watchlist que reportan resultados en las próximas 3 semanas."],
   // Macro
+  ["Revisión de hoy", "Revisión de hoy", "Lista diaria de lo que marcan tus reglas: concentración, margen, semáforos en rojo, defensas cercanas y earnings de la semana."],
+  ["Sobre tu tope", "Concentración (Art. III)", "Títulos que pesan más que tu tope por título. El exceso es lo que habría que reducir para volver al tope."],
+  ["Pilar 4 en rojo", "Pilar 4 en rojo", "Títulos donde tu historial de compras activó una regla de disciplina (A, B o C). Pausa antes de comprar más."],
+  ["Defensas rotas", "Defensas (Art. V)", "Títulos cuyo precio rompió o está a menos de 3% de su defensa táctica o estructural."],
+  ["Earnings en los próximos", "Earnings de la semana", "Reportes de resultados en los próximos 7 días, con el EPS que espera el mercado."],
+  ["Pasan todos tus filtros", "Pasan todos tus filtros", "Títulos con veredicto Califica, calidad Alta, consenso de compra, Pilar 4 en verde y peso bajo tu tope. No es una orden de compra: es donde coinciden todas tus señales."],
+  ["Margen, liquidez", "Margen, liquidez y Art. I", "Uso de préstamo del bróker, caja frente a tu objetivo, y prohibiciones del Art. I (acciones bajo $5, cripto)."],
   ["Mercado ahora", "Mercado ahora", "Indicadores del mercado con precio en vivo."],
   ["S&P 500", "S&P 500 (SPY)", "Las 500 empresas más grandes de EE. UU. Es la referencia del mercado: si tu cartera le gana, vas mejor que el promedio."],
   ["Nasdaq 100", "Nasdaq 100 (QQQ)", "Las 100 tecnológicas y de crecimiento más grandes del Nasdaq. Tu cartera, cargada en IA y chips, suele moverse parecido."],
