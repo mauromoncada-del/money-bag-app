@@ -389,7 +389,8 @@ function renderWatch() {
   const sube = list.filter((t) => liveChg(t) > 0).length, baja = list.filter((t) => liveChg(t) < 0).length;
 
   el.innerHTML = `
-    <div class="toolbar" role="group" aria-label="Vista">${[["lista", "Lista"], ["mapa", "Mapa de calor"]].map(([k, l]) => `<button class="chip" data-wmode="${k}" aria-pressed="${S.wmode === k}">${l}</button>`).join("")}</div>
+    <div class="toolbar" role="group" aria-label="Vista">${[["lista", "Lista"], ["mapa", "Mapa de calor"]].map(([k, l]) => `<button class="chip" data-wmode="${k}" aria-pressed="${S.wmode === k}">${l}</button>`).join("")}
+      ${S.C ? `<button class="chip chip-edit" type="button" data-wl-edit><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>Editar títulos</button>` : ""}</div>
     <div class="toolbar" role="group" aria-label="Filtrar">${sectores.map((s) => `<button class="chip" data-sector="${esc(s)}" aria-pressed="${S.sector === s}">${esc(s)}</button>`).join("")}</div>
     <div class="toolbar" role="group" aria-label="Ordenar">${[["sector", "Por sector"], ["dia", "Mayor % hoy"], ["rango", "Más cerca del piso"]].map(([k, l]) => `<button class="chip" data-sort="${k}" aria-pressed="${S.sort === k}">${l}</button>`).join("")}</div>
     ${S.wmode === "mapa"
@@ -891,6 +892,94 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTip();
 window.addEventListener("scroll", hideTip, true);
 window.addEventListener("resize", hideTip);
 new MutationObserver(() => annotateTips(document.body)).observe(document.body, { childList: true, subtree: true });
+
+// ── Editar watchlist (tabla inv_watchlist; el cálculo diario la lee a las 4:17 a. m.) ──
+const WL = { filas: null, msg: "", err: false, busy: false };
+async function wlCargar() {
+  const { data, error } = await sb.from("inv_watchlist").select("ticker,nombre,sector,activo,agregado").order("agregado");
+  if (error) throw error;
+  WL.filas = data || [];
+}
+function wlSectores() {
+  const base = ["IA & Chips", "Energia & Nuclear", "Materiales & Recursos", "Salud", "Resto"];
+  return [...new Set([...base, ...Object.values(S.M?.tickers || {}).map((i) => i.sector).filter((x) => x && x !== "Cripto" && x !== "Sin clasificar")])];
+}
+function wlRender() {
+  const box = document.querySelector("#sheet .wl"); if (!box) return;
+  const own = new Set(Object.keys(S.C?.posiciones || {}));
+  const activos = (WL.filas || []).filter((f) => f.activo);
+  const enCalculo = new Set(S.M?.watchlist || []);
+  const filas = activos.map((f) => {
+    const t = f.ticker, info = S.M?.tickers?.[t];
+    const estado = !enCalculo.has(t) ? `<span class="pill amarillo">pendiente</span>` : "";
+    return `<li class="wl-row"><div style="min-width:0"><strong>${esc(disp(t))}</strong> ${estado}${own.has(t) ? ' <span class="own" title="En tu cartera" style="display:inline-block;vertical-align:middle"></span>' : ""}
+        <div class="sub">${esc([f.nombre || info?.nombre, f.sector || info?.sector].filter(Boolean).join(" · "))}</div></div>
+      <button type="button" class="btn ghost sm" data-wl-del="${esc(t)}" ${WL.busy ? "disabled" : ""}>Quitar</button></li>`;
+  }).join("");
+  const retirados = [...enCalculo].filter((t) => !activos.some((f) => f.ticker === t));
+  box.innerHTML = `
+    <form class="card stack" data-wl-form autocomplete="off">
+      <strong>Agregar título</strong>
+      <div class="wl-add">
+        <input name="t" placeholder="Ticker, ej. AAPL" maxlength="12" required style="text-transform:uppercase" aria-label="Ticker">
+        <select name="s" aria-label="Sector" required><option value="">Sector…</option>${wlSectores().map((x) => `<option>${esc(x)}</option>`).join("")}</select>
+      </div>
+      <input name="n" placeholder="Nombre de la empresa (opcional)" maxlength="60" aria-label="Nombre">
+      <button class="btn" type="submit" ${WL.busy ? "disabled" : ""}>${WL.busy ? "Verificando…" : "Agregar"}</button>
+      ${WL.msg ? `<div class="msg${WL.err ? " err" : ""}">${esc(WL.msg)}</div>` : ""}
+    </form>
+    <h2>En el reporte · ${activos.length}</h2>
+    <div class="card">${filas ? `<ul class="wl-list">${filas}</ul>` : `<div class="sub">Sin títulos.</div>`}</div>
+    ${retirados.length ? `<div class="sub" style="margin:0 2px">Se retiran en el próximo cálculo: ${retirados.map((t) => esc(disp(t))).join(", ")}.</div>` : ""}
+    <div class="sub" style="margin:0 2px">Los cambios se aplican en el cálculo diario (≈ 4:17 a. m.). Si los quieres ya: GitHub → Actions → "App Money Bag – snapshot diario" → Run workflow. Los títulos que tienes en IBKR siempre aparecen, estén o no en esta lista.</div>`;
+}
+async function wlAbrir() {
+  $("#sheet").innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="Editar títulos del reporte">
+    <div class="grab"></div>
+    <div class="sheet-head"><div><h3>Títulos del reporte</h3><div class="sub">Agrega o quita títulos del watchlist</div></div>
+      <button class="icon-btn x" type="button" data-close aria-label="Cerrar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <div class="stack wl"><div class="card sub">Cargando…</div></div></div>`;
+  $("#sheet").hidden = false; document.body.style.overflow = "hidden";
+  WL.msg = ""; WL.err = false;
+  try { await wlCargar(); } catch (e) { WL.msg = "No se pudo leer la lista. Revisa tu conexión."; WL.err = true; WL.filas = []; }
+  wlRender();
+}
+async function wlAgregar(form) {
+  const t = String(form.t.value || "").trim().toUpperCase().replace(/\s+/g, "-");
+  const sector = form.s.value, nombre = String(form.n.value || "").trim();
+  if (!/^[A-Z0-9.\-^=]{1,12}$/.test(t)) { WL.msg = "Ticker no válido."; WL.err = true; return wlRender(); }
+  if ((WL.filas || []).some((f) => f.ticker === t && f.activo)) { WL.msg = `${t} ya está en el reporte.`; WL.err = true; return wlRender(); }
+  WL.busy = true; WL.msg = ""; wlRender();
+  try {
+    const { data, error } = await sb.functions.invoke("inv-precios", { body: { symbols: [t] } });
+    if (error) throw error;
+    const q = data?.quotes?.[t];
+    if (!q || !isNum(q.price)) { WL.msg = `No encontré ${t} en Yahoo Finance. Revisa el ticker.`; WL.err = true; return; }
+    const { error: e2 } = await sb.from("inv_watchlist").upsert({ ticker: t, sector, nombre: nombre || null, activo: true, agregado: new Date().toISOString() });
+    if (e2) throw e2;
+    await wlCargar();
+    WL.msg = `${t} agregado (${fPrice(q.price)}). Aparece con niveles y análisis después del próximo cálculo.`; WL.err = false;
+  } catch (e) { console.warn(e); WL.msg = "No se pudo agregar. Intenta de nuevo."; WL.err = true; }
+  finally { WL.busy = false; wlRender(); const i = document.querySelector('#sheet [name="t"]'); if (i && !WL.err) i.value = ""; }
+}
+async function wlQuitar(t) {
+  WL.busy = true; wlRender();
+  try {
+    const { error } = await sb.from("inv_watchlist").update({ activo: false }).eq("ticker", t);
+    if (error) throw error;
+    await wlCargar();
+    WL.msg = `${t} se retira del reporte en el próximo cálculo.`; WL.err = false;
+  } catch (e) { console.warn(e); WL.msg = "No se pudo quitar. Intenta de nuevo."; WL.err = true; }
+  finally { WL.busy = false; wlRender(); }
+}
+document.addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-wl-edit]")) { ev.preventDefault(); wlAbrir(); return; }
+  const del = ev.target.closest("[data-wl-del]");
+  if (del) { ev.preventDefault(); wlQuitar(del.dataset.wlDel); }
+});
+document.addEventListener("submit", (ev) => {
+  if (ev.target.matches("[data-wl-form]")) { ev.preventDefault(); wlAgregar(ev.target); }
+});
 
 // ── Datos y sesión ────────────────────────────────────────────────────────
 async function loadSnapshot() {
