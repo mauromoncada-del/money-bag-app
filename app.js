@@ -601,7 +601,8 @@ function openSheet(t) {
   const upside = isNum(f.precio_objetivo) && isNum(L.price) ? (f.precio_objetivo / L.price - 1) * 100 : null;
   const tiersRows = L.tiers ? ["tactico", "estructural", "historico"].map((k) => {
     const x = L.tiers[k] || {}, rb = x.rbLive;
-    return `<tr><td>${TIER_NAME[k]}</td><td class="r num">${x.piso ? fPrice(x.piso.precio) : "—"}</td><td class="r num">${x.techo ? fPrice(x.techo.precio) : "—"}</td>
+    return `<tr><td>${TIER_NAME[k]}</td><td class="r num">${x.piso ? fPrice(x.piso.precio) : "—"}</td><td class="r num">${x.techo ? fPrice(x.techo.precio) : "—"}${x.techo2 ? `<div class="sub num" style="white-space:nowrap" title="Segundo techo">2º ${fPrice(x.techo2.precio)}</div>` : ""}</td>
+      <td class="r num sub">${isNum(x.max) ? fPrice(x.max) : "—"}</td>
       <td class="r num">${fRatio(rb)}</td><td class="r">${rb ? `<span class="pill ${semClass(rb.semaforo)}">${nf(0).format(rb.posicion * 100)}%</span>` : "—"}</td></tr>`;
   }).join("") : "";
   const fr = nt.fuerza_relativa_multi || {};
@@ -629,7 +630,7 @@ function openSheet(t) {
         </div>${sem?.razones?.length ? `<div class="sub" style="margin-top:6px">${esc(sem.razones.join(" · "))}</div>` : ""}</div>` : ""}
       ${L.tiers ? `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><strong>Niveles por volumen</strong>
           ${nt.veredicto ? `<span class="pill ${verClass(nt.veredicto)}">${esc(nt.veredicto)}</span>` : ""}</div>
-        <div class="tbl-wrap" style="margin-top:6px"><table><thead><tr><th>Horizonte</th><th class="r">Piso</th><th class="r">Techo</th><th class="r">R:B</th><th class="r">Rango</th></tr></thead><tbody>${tiersRows}</tbody></table></div>
+        <div class="tbl-wrap" style="margin-top:6px"><table><thead><tr><th>Horizonte</th><th class="r">Piso</th><th class="r">Techo</th><th class="r">Máx.</th><th class="r">R:B</th><th class="r">Rango</th></tr></thead><tbody>${tiersRows}</tbody></table></div>
         <div class="metrics" style="margin-top:10px">
           <div class="metric"><div class="k">Defensa táctica</div><div class="v num ${isNum(nt.defensa_tactica) && L.price < nt.defensa_tactica ? "down" : ""}">${fPrice(nt.defensa_tactica)}</div></div>
           <div class="metric"><div class="k">Defensa estructural</div><div class="v num ${isNum(nt.defensa_estructural) && L.price < nt.defensa_estructural ? "down" : ""}">${fPrice(nt.defensa_estructural)}</div></div>
@@ -824,7 +825,8 @@ const GLOSARIO = [
   ["Estructural 2a", "Horizonte estructural (2 años)", "Piso y techo con el volumen de los últimos 2 años. Marca la tendencia de mediano plazo."],
   ["Histórico 5a", "Horizonte histórico (5 años)", "Piso y techo con el volumen de los últimos 5 años. Las zonas de largo plazo más fuertes."],
   ["Piso", "Piso", "Precio con mucho volumen negociado por debajo del precio actual: zona de soporte donde suelen aparecer compradores. Referencia para comprar."],
-  ["Techo", "Techo", "Precio con mucho volumen negociado por encima del precio actual: zona de resistencia donde suelen aparecer vendedores. Referencia para vender o tomar ganancias."],
+  ["Máx.", "Máximo del periodo", "Precio más alto que tocó el título en ese horizonte. Es distinto del techo: el techo es donde más se negoció, el máximo puede ser un pico rápido con poco volumen."],
+  ["Techo", "Techo", "La zona de precios con más volumen negociado por encima del precio actual (no es el máximo): ahí suelen aparecer vendedores. El '2º' debajo es la siguiente zona fuerte, al menos 5% más arriba: hasta dónde hay camino si supera el primero."],
   ["R:B", "Riesgo : Beneficio", "Cuánto podrías ganar hasta el techo por cada peso que arriesgas hasta el piso. 2x = el beneficio potencial es el doble del riesgo. 'bajo piso' = el precio ya rompió el piso; 'en piso' = está tan cerca del piso que el cálculo no es confiable."],
   ["Rango est.", "Rango de estimados", "EPS más bajo y más alto entre los analistas que cubren el título. Un rango amplio = mucha incertidumbre."],
   ["Rango", "Posición en el rango", "Dónde está el precio entre el piso (0%) y el techo (100%). Verde: cerca del piso con R:B > 2. Rojo: arriba del 65% del rango o R:B < 1. Amarillo: en medio."],
