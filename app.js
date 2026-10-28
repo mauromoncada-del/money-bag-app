@@ -672,10 +672,12 @@ function openSheet(t) {
       <div id="eps-slot" class="stack" data-eps="${esc(t)}"><div class="card sub">Cargando EPS…</div></div>
       ${Object.values(fr).some(Boolean) ? `<div class="card"><strong>Fuerza relativa</strong><ul class="list" style="margin-top:8px">${["SPY", "QQQ", "BTC"].filter((k) => fr[k]).map((k) => `<li><span class="ic num" style="font-size:11px">${k}</span><span>${esc(fr[k].texto)}</span></li>`).join("")}</ul></div>` : ""}
       ${info.noticia?.titulo ? `<div class="card"><strong>Última noticia</strong><div style="margin-top:6px">${info.noticia.url ? `<a href="${esc(info.noticia.url)}" target="_blank" rel="noopener">${esc(info.noticia.titulo)}</a>` : esc(info.noticia.titulo)}</div></div>` : ""}
+      ${S.C ? `<div id="mov-slot" data-mov="${esc(t)}"></div>` : ""}
     </div></div>`;
   $("#sheet").hidden = false;
   document.body.style.overflow = "hidden";
   loadEps(t);
+  renderMov();
 }
 // ── EPS trimestral (tabla inv_eps, la llena eps_sync.py) ──────────────────
 const MES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
@@ -815,12 +817,40 @@ async function loadEps(t) {
   if (cur && cur.dataset.eps === t) cur.innerHTML = epsCardHtml(t, S.E[t]) + fcfCardHtml(t, S.E[t]);
 }
 
+// ── Movimientos de IBKR de los últimos 12 meses (solo con los montos visibles) ──
+function renderMov() {
+  const slot = document.getElementById("mov-slot"); if (!slot) return;
+  const t = slot.dataset.mov, movs = S.C?.movimientos_12m?.[t];
+  if (S.masked) {
+    slot.innerHTML = `<div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:10px"><div><strong>Tus movimientos · 12 meses</strong><div class="sub">Ocultos junto con los montos.</div></div>
+      <button type="button" class="btn ghost sm" data-unmask style="display:inline-flex;align-items:center;gap:6px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>Mostrar</button></div>`;
+    return;
+  }
+  if (!S.C?.movimientos_12m) { slot.innerHTML = `<div class="card sub">Tus movimientos de 12 meses aparecen después del próximo cálculo diario.</div>`; return; }
+  if (!movs?.length) { slot.innerHTML = `<div class="card"><strong>Tus movimientos · 12 meses</strong><div class="sub" style="margin-top:6px">Sin compras ni ventas de ${esc(disp(t))} en IBKR en los últimos 12 meses.</div></div>`; return; }
+  const sum = (side) => movs.filter((m) => m[1] === side).reduce((a, m) => ({ n: a.n + 1, q: a.q + (+m[2] || 0), v: a.v + (+m[2] || 0) * (+m[3] || 0) }), { n: 0, q: 0, v: 0 });
+  const c = sum("BUY"), v = sum("SELL");
+  const qf = (q) => nf(q % 1 ? 2 : 0).format(q);
+  const fecha = (iso) => { const [y, mo, d] = iso.split("-"); return `${+d} ${MES[+mo - 1]} ${y.slice(2)}`; };
+  const filas = movs.map((m) => `<tr><td class="num" style="white-space:nowrap">${fecha(m[0])}</td><td><span class="pill ${m[1] === "BUY" ? "verde" : "rojo"}">${m[1] === "BUY" ? "compra" : "venta"}</span></td>
+    <td class="r num">${qf(+m[2])}</td><td class="r num">${fPrice(+m[3], t)}</td><td class="r num">${fPrice((+m[2]) * (+m[3]), t)}</td></tr>`);
+  const tabla = (rows) => `<div class="tbl-wrap"><table><thead><tr><th>Fecha</th><th>Op.</th><th class="r">Cant.</th><th class="r">Precio</th><th class="r">Monto</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+  slot.innerHTML = `<div class="card"><strong>Tus movimientos · 12 meses</strong>
+    <div class="metrics" style="margin-top:8px">
+      <div class="metric"><div class="k">Compras</div><div class="v num">${c.n} · ${qf(c.q)} acc.</div><div class="sub num">${fPrice(c.v, t)}${c.q ? ` · prom. ${fPrice(c.v / c.q, t)}` : ""}</div></div>
+      <div class="metric"><div class="k">Ventas</div><div class="v num">${v.n} · ${qf(v.q)} acc.</div><div class="sub num">${fPrice(v.v, t)}${v.q ? ` · prom. ${fPrice(v.v / v.q, t)}` : ""}</div></div>
+    </div>
+    <div style="margin-top:10px">${tabla(filas.slice(0, 12))}</div>
+    ${filas.length > 12 ? `<details style="margin-top:8px"><summary class="sub" style="cursor:pointer">Ver los ${filas.length} movimientos</summary><div style="margin-top:6px">${tabla(filas.slice(12))}</div></details>` : ""}
+    <div class="sub" style="margin-top:8px">Fuente: IBKR (Flex Query), del más reciente al más antiguo.</div></div>`;
+}
 function closeSheet() { $("#sheet").hidden = true; $("#sheet").innerHTML = ""; document.body.style.overflow = ""; }
 
 // ── Glosario: explicación al pasar el mouse o tocar cualquier título o medida ──
 // Las claves se buscan al inicio del texto de cada etiqueta (sin distinguir mayúsculas).
 const GLOSARIO = [
   // Ficha · tu posición
+  ["Tus movimientos", "Tus movimientos · 12 meses", "Compras y ventas que hiciste de este título en IBKR en el último año, con el precio promedio de cada lado. Solo se muestran con los montos visibles (botón del ojo)."],
   ["Tu posición", "Tu posición", "Lo que tienes hoy de este título en IBKR: cantidad, costo, valor actual y ganancia o pérdida sin vender."],
   ["Cantidad", "Cantidad", "Número de acciones (o unidades) que tienes en IBKR."],
   ["Cant.", "Cantidad", "Número de acciones de la operación."],
@@ -1074,6 +1104,9 @@ document.addEventListener("click", (ev) => {
   const del = ev.target.closest("[data-wl-del]");
   if (del) { ev.preventDefault(); wlQuitar(del.dataset.wlDel); }
 });
+document.addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-unmask]")) { ev.preventDefault(); setMasked(false); render(); }
+});
 document.addEventListener("submit", (ev) => {
   if (ev.target.matches("[data-wl-form]")) { ev.preventDefault(); wlAgregar(ev.target); }
 });
@@ -1128,6 +1161,7 @@ function setMasked(v) {
   document.body.classList.toggle("masked", v);
   const b = $("#mask-btn"), lbl = v ? "Mostrar montos" : "Ocultar montos";
   b.setAttribute("aria-label", lbl); b.title = lbl; b.setAttribute("aria-pressed", String(!v));
+  if (typeof renderMov === "function") renderMov();
 }
 setMasked(true);
 // Los montos solo se muestran cuando tú lo pides; no se recuerda entre aperturas.
