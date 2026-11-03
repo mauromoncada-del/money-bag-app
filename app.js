@@ -474,9 +474,21 @@ function renderCartera() {
       <div class="metric"><div class="k">Interés margen (mes)</div><div class="v num">${fUsd(C.liquidez?.interes_pagado_mtd)}</div></div>
     </div>
 
-    ${trades.length ? `<h2>Movimientos recientes</h2><div class="card flush tbl-wrap"><table><thead><tr><th>Fecha</th><th>Ticker</th><th>Op.</th><th class="r">Cant.</th><th class="r">Precio</th></tr></thead><tbody>
-      ${trades.map((t) => `<tr><td class="num">${esc(String(t.date || "").slice(0, 10))}</td><td><strong>${esc(t.symbol)}</strong></td><td><span class="pill ${t.side === "BUY" ? "verde" : "rojo"}">${t.side === "BUY" ? "compra" : "venta"}</span></td><td class="r num"><span class="amt">${nf(2).format(t.qty || 0)}</span></td><td class="r num">${fPrice(t.price, t.symbol)}</td></tr>`).join("")}
-    </tbody></table></div>` : ""}
+    ${trades.length ? `<h2>Movimientos recientes</h2><div class="card flush tbl-wrap"><table class="movs"><thead><tr><th>Fecha</th><th>Ticker · op.</th><th class="r">Cant. × precio</th><th class="r">vs. hoy</th><th class="r">Resultado</th></tr></thead><tbody>
+      ${trades.map((t) => {
+        const ahora = livePrice(t.symbol), compra = t.side === "BUY";
+        const varPct = isNum(ahora) && t.price ? (ahora / t.price - 1) * 100 : null;
+        // Resultado del movimiento a precio de hoy: compra gana si subió; venta "gana" si bajó después de vender.
+        const res = isNum(ahora) && isNum(t.price) && isNum(t.qty) ? (compra ? ahora - t.price : t.price - ahora) * t.qty : null;
+        const d = String(t.date || "").replace(/-/g, ""), fecha = d.length >= 8 ? `${+d.slice(6, 8)} ${MES[+d.slice(4, 6) - 1]}` : esc(t.date);
+        return `<tr><td class="num" style="white-space:nowrap">${fecha}</td>
+          <td><button type="button" class="tk-link" data-t="${esc(t.symbol)}">${esc(disp(t.symbol))}</button><div><span class="pill ${compra ? "verde" : "rojo"}">${compra ? "compra" : "venta"}</span></div></td>
+          <td class="r num"><span class="amt">${nf(t.qty % 1 ? 2 : 0).format(t.qty || 0)}</span><div class="sub num">× ${fPrice(t.price, t.symbol)}</div></td>
+          <td class="r num ${varPct === null ? "" : (compra ? cls(varPct) : cls(-varPct))}">${fPct(varPct, 1)}</td>
+          <td class="r num ${cls(res)}"><span class="amt">${isNum(res) ? fPrice(Math.abs(res), t.symbol).replace(/^/, res < 0 ? "−" : "+") : "—"}</span></td></tr>`;
+      }).join("")}
+    </tbody></table></div>
+    <div class="sub" style="margin:0 2px">"vs. hoy": cuánto se movió el precio desde ese movimiento. "Resultado": ganancia o pérdida de ese movimiento a precio de hoy — en una compra, si el precio subió; en una venta, si el precio bajó después de vender (verde = vendiste caro).</div>` : ""}
     <div class="foot">Posiciones y caja del Flex Query de IBKR (${fDate(C.generado)}); valores recalculados con precios de ahora.</div>`;
 }
 
@@ -850,6 +862,8 @@ function closeSheet() { $("#sheet").hidden = true; $("#sheet").innerHTML = ""; d
 // Las claves se buscan al inicio del texto de cada etiqueta (sin distinguir mayúsculas).
 const GLOSARIO = [
   // Ficha · tu posición
+  ["vs. hoy", "Variación vs. hoy", "Cuánto cambió el precio del título desde ese movimiento hasta el precio de ahora. En compras verde = subió desde que compraste; en ventas verde = bajó desde que vendiste."],
+  ["Resultado", "Resultado del movimiento", "Ganancia o pérdida de ese movimiento si lo valoras a precio de hoy: compra = (precio de hoy − precio de compra) × cantidad; venta = (precio de venta − precio de hoy) × cantidad. En una venta, un resultado negativo significa que el precio siguió subiendo después de vender."],
   ["Tus movimientos", "Tus movimientos · 12 meses", "Compras y ventas que hiciste de este título en IBKR en el último año, con el precio promedio de cada lado. Solo se muestran con los montos visibles (botón del ojo)."],
   ["Tu posición", "Tu posición", "Lo que tienes hoy de este título en IBKR: cantidad, costo, valor actual y ganancia o pérdida sin vender."],
   ["Cantidad", "Cantidad", "Número de acciones (o unidades) que tienes en IBKR."],
