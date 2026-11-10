@@ -617,6 +617,7 @@ function sparkSvg(arr, price) {
 
 function openSheet(t) {
   const info = S.M.tickers[t]; if (!info) return;
+  S.sheetT = t;
   const L = liveLevels(t), ch = liveChg(t), ret = periodReturns(t);
   const nt = L.nt || {}, f = info.fundamentales || {}, e = info.earnings || {};
   const pos = S.C?.posiciones?.[t];
@@ -856,7 +857,7 @@ function renderMov() {
     ${filas.length > 12 ? `<details style="margin-top:8px"><summary class="sub" style="cursor:pointer">Ver los ${filas.length} movimientos</summary><div style="margin-top:6px">${tabla(filas.slice(12))}</div></details>` : ""}
     <div class="sub" style="margin-top:8px">Fuente: IBKR (Flex Query), del más reciente al más antiguo.</div></div>`;
 }
-function closeSheet() { $("#sheet").hidden = true; $("#sheet").innerHTML = ""; document.body.style.overflow = ""; }
+function closeSheet() { S.sheetT = null; $("#sheet").hidden = true; $("#sheet").innerHTML = ""; document.body.style.overflow = ""; }
 
 // ── Glosario: explicación al pasar el mouse o tocar cualquier título o medida ──
 // Las claves se buscan al inicio del texto de cada etiqueta (sin distinguir mayúsculas).
@@ -1229,6 +1230,9 @@ sb.auth.onAuthStateChange((evt, session) => {
   const { data } = await sb.auth.getSession();
   if (data?.session) start(); else showLogin();
 })();
+
+// Lo que usa el asistente IA (copiloto.js): los mismos cálculos de las pantallas.
+window.MB = { S, sb, liveLevels, portfolio, topOportunidades, periodReturns, livePrice, liveChg, prevClose, allTickers, disp, monedaDe, openSheet };
 
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
 })();
